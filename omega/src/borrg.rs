@@ -1,5 +1,3 @@
-
-
 //! # Omega Random Number Generator - Biased Distribution Version
 //!
 //! Enhanced version with configurable bias toward the initial 25% of ranges
@@ -86,7 +84,15 @@ impl OmegaRng {
         result
     }
     
-    /// Generate a random float in [0, 1) for bias calculations
+    /// Generate a random float in [0, 1) for bias calculations - optimized version
+    #[inline(always)]
+    fn next_f64_fast(&mut self) -> f64 {
+        // Faster float generation using direct bit manipulation
+        const SCALE: f64 = 1.0 / (1u32 << 24) as f64;
+        ((self.next_raw() >> 40) as u32 as f64) * SCALE
+    }
+    
+    /// High precision float for when needed
     #[inline(always)]
     fn next_f64(&mut self) -> f64 {
         const SCALE: f64 = 1.0 / (1u64 << 53) as f64;
@@ -148,24 +154,27 @@ impl OmegaRng {
             
             BiasStrategy::Exponential => {
                 // Exponential decay bias - strong preference for early values
-                let u = self.next_f64();
-                let biased_u = 1.0 - (-u * 2.0).exp(); // Exponential curve
+                let u = self.next_f64_fast();
+                let biased_u = (-u * 3.0).exp(); // Fixed: exponential decay from 1 to 0
                 let offset = (biased_u * full_range as f64) as u64;
                 min + offset.min(full_range - 1)
             },
             
             BiasStrategy::Power(power) => {
-                // Power curve bias - adjustable steepness
-                let u = self.next_f64();
-                let biased_u = u.powf(power);
+                // Power curve bias - values < 1.0 bias toward start, > 1.0 toward end
+                let u = self.next_f64_fast();
+                let biased_u = if power < 1.0 {
+                    1.0 - (1.0 - u).powf(1.0 / power) // Invert for start bias
+                } else {
+                    u.powf(power)
+                };
                 let offset = (biased_u * full_range as f64) as u64;
                 min + offset.min(full_range - 1)
             },
             
             BiasStrategy::Stepped => {
-                // Stepped bias - 3x probability for first quarter
-                let choice = self.next_raw() % 4;
-                if choice < 3 {
+                // Stepped bias - 3x probability for first quarter - optimized
+                if (self.next_raw() & 3) < 3 { // 3/4 = 75% probability
                     // First quarter (75% probability)
                     self.range(min, quarter_end.min(max))
                 } else {
@@ -183,7 +192,7 @@ impl OmegaRng {
     pub fn range_biased_25(&mut self, min: u64, max: u64) -> u64 {
         self.range_biased(min, max, BiasStrategy::Weighted)
     }
-    
+
     
     /// Generates a random boolean value with the given probability of being `true`.
     ///
@@ -276,8 +285,6 @@ impl OmegaRng {
             slice.swap(i, j);
         }
     }
-    
-    
 }
 
 // Keep original range functions for performance
