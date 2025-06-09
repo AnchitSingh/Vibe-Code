@@ -13,8 +13,7 @@ use system_pulse::OmegaSystemPulse;
 use task::{Priority, Task, TaskError};
 use types::NodeError;
 
-use omega::borrg::OmegaRng;
-use omega::borrg::BiasStrategy;
+use omega::OmegaRng;
 use std::sync::mpsc;
 use std::sync::{
     Arc,
@@ -22,6 +21,8 @@ use std::sync::{
 };
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+use rand::rngs::ThreadRng;
+use rand::Rng;
 // --- Test Scenario Selection ---
 #[derive(Debug, Clone, Copy)]
 enum TestScenario {
@@ -34,17 +35,17 @@ enum TestScenario {
 const CURRENT_SCENARIO: TestScenario = TestScenario::HeterogeneousNodes;
 
 // --- Stress Test Configuration ---
-const NUM_NODES_CONF: usize = 8; // Total nodes
-const NUM_SUPER_NODES_CONF: usize = 2; // How many of the total nodes will be "super"
-const NUM_SUBMITTER_THREADS_CONF: usize = 16;
-const TOTAL_TASKS_PER_SUBMITTER_CONF: usize = 50; // Increased tasks to give more work
+const NUM_NODES_CONF: usize = 640; // Total nodes
+const NUM_SUPER_NODES_CONF: usize = 160; // How many of the total nodes will be "super"
+const NUM_SUBMITTER_THREADS_CONF: usize = 96;
+const TOTAL_TASKS_PER_SUBMITTER_CONF: usize = 10000; // Increased tasks to give more work
 const AVG_TASK_PROCESSING_MS_CONF: u64 = 75;
 const TASK_PROCESSING_VARIABILITY_MS_CONF: u64 = 50;
 const SUBMISSION_DELAY_MS_CONF: u64 = 5;
 const SUBMISSION_DELAY_VARIABILITY_MS_CONF: u64 = 5;
 const SYSTEM_MAXED_OUT_BACKOFF_MS_CONF: u64 = 250;
 const MAX_SUBMISSION_RETRIES_CONF: usize = 5;
-const MONITORING_INTERVAL_MS_CONF: u64 = 1000;
+const MONITORING_INTERVAL_MS_CONF: u64 = 10000;
 const POST_SUBMISSION_STABILIZATION_S_CONF: u64 = 20;
 
 // Specific for FailingTasks scenario
@@ -77,7 +78,7 @@ fn route_task_to_least_loaded(
     nodes: &Vec<Arc<OmegaNode<String>>>,
     task: Task<String>,
     _task_id_for_log: String,
-    rng: &mut OmegaRng,
+    rng: &mut ThreadRng,
 ) -> Result<(), NodeError> {
     let n_total_nodes = nodes.len();
     if n_total_nodes == 0 {
@@ -98,18 +99,15 @@ fn route_task_to_least_loaded(
             let (mut prev, mut boundary) = (u64::MAX, (n_total_nodes - k) as u64);
 
             for _ in 0..k {
-                let mut next = rng.range_biased(prev.wrapping_add(1), boundary,BiasStrategy::Weighted);
-                if 4*next >= boundary as u64 { // Weaker bias against upper 1/4
-                    next = rng.range_biased(prev.wrapping_add(1), boundary,BiasStrategy::Weighted);
+                let mut next = rng.random_range(prev.wrapping_add(1)..=boundary);
+                if 3*next >= boundary as u64 { // Weaker bias against upper 1/4
+                    next = rng.random_range(prev.wrapping_add(1)..=boundary);
                 }
-                // if 3*next >= boundary as u64 { // Weaker bias against upper 1/4
-                //     next = rng.range_biased(prev.wrapping_add(1), boundary,BiasStrategy::Weighted);
-                // }
-                // if 2*next >= boundary as u64 { // Weaker bias against upper 1/4
-                //     next = rng.range_biased(prev.wrapping_add(1), boundary,BiasStrategy::Weighted);
-                // }
+                if 2*next >= boundary as u64 { // Weaker bias against upper 1/4
+                    next = rng.random_range(prev.wrapping_add(1)..=boundary);
+                }
                 // if 3*idx > k && next <= 2*prev.wrapping_add(1) { // Same complex condition
-                //     next = rng.range_biased(prev.wrapping_add(1), boundary);
+                //     next = rng.range(prev.wrapping_add(1), boundary);
                 // }
                 chosen_indices.push(next as usize);
                 prev = next;
@@ -265,7 +263,7 @@ fn main() {
         let stats_clone_for_submitter = Arc::clone(&shared_stats);
 
         let handle = thread::spawn(move || {
-            let mut task_rng = OmegaRng::new(submitter_idx as u64);
+            let mut task_rng = ThreadRng::default();
 
             let mut submitter_loop_logic = || {
                 stats_clone_for_submitter
@@ -278,17 +276,17 @@ fn main() {
 
                 let processing_ms = match CURRENT_SCENARIO {
                     TestScenario::ExtremeDurations => {
-                        if task_rng.bool(0.2) {
-                            task_rng.range(400, 800)
+                        if task_rng.random_bool(0.2) {
+                            task_rng.random_range(400..=800)
                         } else {
-                            task_rng.range(5, 50)
+                            task_rng.random_range(5..=50)
                         }
                     }
                     _ => {
                         // Baseline, FailingTasks, SustainedLoad, HeterogeneousNodes use similar timing
                         let base_proc_time = AVG_TASK_PROCESSING_MS_CONF;
                         let variability = if TASK_PROCESSING_VARIABILITY_MS_CONF > 0 {
-                            task_rng.range(0, TASK_PROCESSING_VARIABILITY_MS_CONF * 2)
+                            task_rng.random_range(0..=TASK_PROCESSING_VARIABILITY_MS_CONF * 2)
                         } else {
                             0
                         };
@@ -301,7 +299,7 @@ fn main() {
                 
                     let should_fail_this_task =
                         if matches!(CURRENT_SCENARIO, TestScenario::FailingTasks) {
-                            task_rng.bool(TASK_FAILURE_PROBABILITY)
+                            task_rng.random_bool(TASK_FAILURE_PROBABILITY)
                         } else {
                             false
                         };
@@ -359,7 +357,7 @@ fn main() {
                             }
 
                             thread::sleep(Duration::from_millis(
-                                SYSTEM_MAXED_OUT_BACKOFF_MS_CONF + task_rng.range(0, 99),
+                                SYSTEM_MAXED_OUT_BACKOFF_MS_CONF + task_rng.random_range(0..=99),
                             ));
                         }
                         Err(e) => {
@@ -377,7 +375,7 @@ fn main() {
 
                 let base_sub_delay = SUBMISSION_DELAY_MS_CONF;
                 let sub_variability = if SUBMISSION_DELAY_VARIABILITY_MS_CONF > 0 {
-                    task_rng.range(0, SUBMISSION_DELAY_VARIABILITY_MS_CONF * 2)
+                    task_rng.random_range(0..=SUBMISSION_DELAY_VARIABILITY_MS_CONF * 2)
                 } else {
                     0
                 };
@@ -468,21 +466,21 @@ fn main() {
         if all_queues_empty_locally && all_at_min_threads_locally {
             let expected_total_min_threads: usize =
                 nodes_for_submission.iter().map(|n| n.min_threads).sum();
-            // if total_active_threads == expected_total_min_threads {
-            //     println!(
-            //         "[Main-Monitor @ {:?}] All nodes appear idle and at min_threads. Exiting monitor loop.",
-            //         overall_start_time.elapsed()
-            //     );
-            //     break;
-            // }
+            if total_active_threads == expected_total_min_threads {
+                println!(
+                    "[Main-Monitor @ {:?}] All nodes appear idle and at min_threads. Exiting monitor loop.",
+                    overall_start_time.elapsed()
+                );
+                break;
+            }
         }
         if monitoring_start_time.elapsed()
             >= Duration::from_secs(POST_SUBMISSION_STABILIZATION_S_CONF)
         {
-            // println!(
-            //     "[Main-Monitor @ {:?}] Stabilization period ended. Proceeding to final check.",
-            //     overall_start_time.elapsed()
-            // );
+            println!(
+                "[Main-Monitor @ {:?}] Stabilization period ended. Proceeding to final check.",
+                overall_start_time.elapsed()
+            );
             break;
         }
         thread::sleep(Duration::from_millis(100));
@@ -495,24 +493,24 @@ fn main() {
                 .scale_down_cooldown
                 .as_millis()
                 .max(MONITORING_INTERVAL_MS_CONF as u128);
-            // println!(
-            //     "[Main] Node {} (ID {}) not fully idle, waiting extra {}ms...",
-            //     idx,
-            //     node.id().0,
-            //     wait_time
-            // );
+            println!(
+                "[Main] Node {} (ID {}) not fully idle, waiting extra {}ms...",
+                idx,
+                node.id().0,
+                wait_time
+            );
             thread::sleep(Duration::from_millis(wait_time as u64 + 200));
         }
-        // println!(
-        //     "Node {} (ID {}): P: {}/{}, Active: {}, Desired: {}, Q_Len: {}",
-        //     idx,
-        //     node.id().0,
-        //     node.get_pressure(),
-        //     node.max_pressure(),
-        //     node.active_threads(),
-        //     node.desired_threads(),
-        //     node.task_queue.len()
-        // );
+        println!(
+            "Node {} (ID {}): P: {}/{}, Active: {}, Desired: {}, Q_Len: {}",
+            idx,
+            node.id().0,
+            node.get_pressure(),
+            node.max_pressure(),
+            node.active_threads(),
+            node.desired_threads(),
+            node.task_queue.len()
+        );
         assert_eq!(
             node.task_queue.len(),
             0,
@@ -547,12 +545,12 @@ fn main() {
     }
     drop(nodes_for_submission);
 
-    // println!("\nWaiting for SystemPulse to finish...");
-    // if let Err(e) = system_pulse_thread.join() {
-    //     eprintln!("SystemPulse thread panicked: {:?}", e);
-    // } else {
-    //     println!("SystemPulse thread finished gracefully.");
-    // }
+    println!("\nWaiting for SystemPulse to finish...");
+    if let Err(e) = system_pulse_thread.join() {
+        eprintln!("SystemPulse thread panicked: {:?}", e);
+    } else {
+        println!("SystemPulse thread finished gracefully.");
+    }
 
     println!(
         "\n--- Stress Test Summary (Scenario: {:?}) ---",

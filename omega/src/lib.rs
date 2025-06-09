@@ -12,6 +12,7 @@ pub mod ohs;
 pub mod orrg;
 pub mod os;
 pub mod oufh;
+pub mod borrg;
 
 // Re-export commonly used items at the crate root for easier access
 pub use ohs::OmegaHashSet;

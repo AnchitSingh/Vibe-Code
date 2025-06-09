@@ -49,30 +49,30 @@ impl OmegaRng {
     /// let rng = OmegaRng::new(12345);
     /// ```
     // The CORRECT and ROBUST constructor
-#[inline(always)]
-pub fn new(seed: u64) -> Self {
-    // Step 1: Use your fast hash to turn the initial seed into a starting point.
-    // This is a good way to handle simple seeds like 0, 1, 2...
-    let mut z = omega_hash_u64_tiny_optimized(seed);
+    #[inline(always)]
+    pub fn new(seed: u64) -> Self {
+        // Step 1: Use your fast hash to turn the initial seed into a starting point.
+        // This is a good way to handle simple seeds like 0, 1, 2...
+        let mut z = omega_hash_u64_tiny_optimized(seed);
 
-    // Step 2: Use the standard SplitMix64 algorithm to derive
-    // the two internal states. This is the code you had commented out.
-    // It guarantees state_a and state_b are different and have good properties.
-    z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
-    let state_a = z ^ (z >> 31);
+        // Step 2: Use the standard SplitMix64 algorithm to derive
+        // the two internal states. This is the code you had commented out.
+        // It guarantees state_a and state_b are different and have good properties.
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+        let state_a = z ^ (z >> 31);
 
-    // Derive state_b from the result of state_a's generation
-    z = (state_a ^ (state_a >> 30)).wrapping_mul(0xbf585b9d1ce4e5b9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94d0495b93111eb);
-    let state_b = z ^ (z >> 21);
+        // Derive state_b from the result of state_a's generation
+        z = (state_a ^ (state_a >> 30)).wrapping_mul(0xbf585b9d1ce4e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0495b93111eb);
+        let state_b = z ^ (z >> 21);
 
-    Self {
-        state_a,
-        state_b,
-        counter: 0,
+        Self {
+            state_a,
+            state_b,
+            counter: 0,
+        }
     }
-}
 
     /// Generates the next raw 64-bit random number using XOROSHIRO128+ algorithm.
     ///
@@ -83,7 +83,7 @@ pub fn new(seed: u64) -> Self {
         // Fallback implementation for other architectures or when SIMD is not available
         self.next_raw_scalar()
     }
-    
+
     #[inline(always)]
     fn next_raw_scalar(&mut self) -> u64 {
         let s0 = self.state_a;
@@ -218,7 +218,7 @@ impl OmegaRng {
     /// ```
     /// # use crate::orrg::OmegaRng;
     /// let mut rng = OmegaRng::new(42);
-    /// 
+    ///
     /// // 30% chance of true
     /// if rng.bool(0.3) {
     ///     println!("30% chance hit!");
