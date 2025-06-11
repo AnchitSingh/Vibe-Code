@@ -1,6 +1,6 @@
 // src/system_pulse.rs
 
-use crate::signals::{SystemSignal, NodeId}; // OpportunisticInfo is no longer imported
+use crate::signals::{SystemSignal}; // OpportunisticInfo is no longer imported
 
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
@@ -62,8 +62,7 @@ impl OmegaSystemPulse {
                             self.overloaded_nodes.insert(node_id.0 as u64, ());
                         }
                         SystemSignal::NodeIdle { .. } => {
-                            // OmegaHashSet doesn't have a remove method, so we'll just ignore this
-                            // since we only need to track overloaded nodes
+                            self.overloaded_nodes.remove(&(node_id.0 as u64));
                         }
                         SystemSignal::TaskCompleted { .. } => {
                             self.total_task_completed_signals += 1;

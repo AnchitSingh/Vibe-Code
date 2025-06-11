@@ -1,0 +1,29 @@
+--- Ultra-Ω System: Phase D - Scenario: HeterogeneousNodes ---
+Routing strategy: Power of K Choices, K = 9
+[SystemPulse] Started. Print interval: 20s, Surge threshold: 320 node(s) overloaded.
+
+--- Launching 960 Submitter Threads (tasks determined by scenario) ---
+[SystemPulse] { 19996ms } Nodes Seen: 640 | Overloaded: 225 | TaskCompleted Signals: 2832616 | TaskFailed Signals: 0
+[SystemPulse] { 39996ms } Nodes Seen: 640 | Overloaded: 301 | TaskCompleted Signals: 5808323 | TaskFailed Signals: 0
+[SystemPulse] { 59996ms } Nodes Seen: 640 | Overloaded: 321 | TaskCompleted Signals: 8784496 | TaskFailed Signals: 0
+
+--- All task submissions attempted (took 71.254431057s). Total Tasks Target for Scenario: 9600000 ---
+--- Waiting for system to process remaining tasks and stabilize (approx 20s)... ---
+[SystemPulse] { 88854ms } Nodes Seen: 640 | Overloaded: 0 | TaskCompleted Signals: 9600000 | TaskFailed Signals: 0
+
+--- Final System State Check & Stats ---
+
+Shutting down all OmegaNodes...
+
+--- Stress Test Summary (Scenario: HeterogeneousNodes) ---
+[SystemPulse] Signal channel disconnected. Performing final summary and exiting.
+Configuration: K for Routing = 9
+Total Tasks Attempted for Submission: 9600000
+Total Tasks Successfully Submitted: 9600000
+Total Tasks Failed Submission (Max Retries): 0
+Total SystemMaxedOut Events (Router gave up): 166977
+[SystemPulse] { 91275ms } Nodes Seen: 640 | Overloaded: 0 | TaskCompleted Signals: 9600000 | TaskFailed Signals: 0
+[SystemPulse] Stopped.
+Total Test Duration: 93.04401932s
+
+--- Ultra-Ω System: Phase D - Scenario: HeterogeneousNodes Finished ---

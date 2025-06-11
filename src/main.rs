@@ -34,10 +34,24 @@ enum TestScenario {
 const CURRENT_SCENARIO: TestScenario = TestScenario::HeterogeneousNodes;
 
 // --- Stress Test Configuration ---
-const NUM_NODES_CONF: usize = 8; // Total nodes
-const NUM_SUPER_NODES_CONF: usize = 2; // How many of the total nodes will be "super"
-const NUM_SUBMITTER_THREADS_CONF: usize = 16;
-const TOTAL_TASKS_PER_SUBMITTER_CONF: usize = 50; // Increased tasks to give more work
+// // Core Scale Configuration
+// const NUM_NODES_CONF: usize = 640;
+// // Assuming a similar ratio of Super Nodes, e.g., 1 in every 8.
+// const NUM_SUPER_NODES_CONF: usize = 80; // (640 / 8)
+// // This is the key change from the log output.
+// const NUM_SUBMITTER_THREADS_CONF: usize = 96;
+// // To get 960,000 total tasks with 96 submitters.
+// const TOTAL_TASKS_PER_SUBMITTER_CONF: usize = 10_000;
+
+// Core Scale Configuration
+const NUM_NODES_CONF: usize = 16;
+// Assuming a similar ratio of Super Nodes, e.g., 1 in every 8.
+const NUM_SUPER_NODES_CONF: usize = 6; // (640 / 8)
+// This is the key change from the log output.
+const NUM_SUBMITTER_THREADS_CONF: usize = 8;
+// To get 960,000 total tasks with 96 submitters.
+const TOTAL_TASKS_PER_SUBMITTER_CONF: usize = 100;
+
 const AVG_TASK_PROCESSING_MS_CONF: u64 = 75;
 const TASK_PROCESSING_VARIABILITY_MS_CONF: u64 = 50;
 const SUBMISSION_DELAY_MS_CONF: u64 = 5;
@@ -98,16 +112,19 @@ fn route_task_to_least_loaded(
             let (mut prev, mut boundary) = (u64::MAX, (n_total_nodes - k) as u64);
 
             for _ in 0..k {
-                let mut next = rng.range_biased(prev.wrapping_add(1), boundary,BiasStrategy::Weighted);
+                let mut next = rng.range_biased(prev.wrapping_add(1), boundary,BiasStrategy::Power(3.14));
+                if 4*next >= boundary as u64 { // Weaker bias against upper 1/4
+                    next = rng.range_biased(prev.wrapping_add(1), boundary,BiasStrategy::Power(3.14));
+                }
+                if 4*next >= boundary as u64 { // Weaker bias against upper 1/4
+                    next = rng.range_biased(prev.wrapping_add(1), boundary,BiasStrategy::Stepped);
+                }
                 if 4*next >= boundary as u64 { // Weaker bias against upper 1/4
                     next = rng.range_biased(prev.wrapping_add(1), boundary,BiasStrategy::Weighted);
                 }
-                // if 3*next >= boundary as u64 { // Weaker bias against upper 1/4
-                //     next = rng.range_biased(prev.wrapping_add(1), boundary,BiasStrategy::Weighted);
-                // }
-                // if 2*next >= boundary as u64 { // Weaker bias against upper 1/4
-                //     next = rng.range_biased(prev.wrapping_add(1), boundary,BiasStrategy::Weighted);
-                // }
+                if 4*next >= boundary as u64 { // Weaker bias against upper 1/4
+                    next = rng.range_biased(prev.wrapping_add(1), boundary,BiasStrategy::Exponential);
+                }
                 // if 3*idx > k && next <= 2*prev.wrapping_add(1) { // Same complex condition
                 //     next = rng.range_biased(prev.wrapping_add(1), boundary);
                 // }
