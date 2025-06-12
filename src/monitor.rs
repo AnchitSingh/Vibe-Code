@@ -2,13 +2,14 @@
 
 use crate::node::OmegaNode;
 use crate::SharedSubmitterStats;
+use omega::omega_timer::omega_time_ns; // UPDATED: Import omega_time_ns
 use std::io::{stdout, Write};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration; // Kept for thread::sleep, which is correct
 
 const MONITOR_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_NODES_TO_DISPLAY: usize = 24;
@@ -23,7 +24,8 @@ impl Monitor {
     pub fn start(
         nodes: Arc<Vec<Arc<OmegaNode<String>>>>,
         stats: Arc<SharedSubmitterStats>,
-        start_time: Instant,
+        // UPDATED: start_time is now a u64 nanosecond timestamp
+        start_time_ns: u64,
     ) -> Self {
         let is_done_flag = Arc::new(AtomicBool::new(false));
         let monitor_handle = {
@@ -32,7 +34,8 @@ impl Monitor {
                 .name("live-monitor".to_string())
                 .spawn(move || {
                     while !done_clone.load(Ordering::Relaxed) {
-                        print_dashboard(&nodes, &stats, start_time);
+                        // UPDATED: Pass the u64 timestamp
+                        print_dashboard(&nodes, &stats, start_time_ns);
                         thread::sleep(MONITOR_REFRESH_INTERVAL);
                     }
                     // Final clear screen after finishing
@@ -42,7 +45,6 @@ impl Monitor {
                 .expect("Failed to spawn monitor thread")
         };
         // We don't need to join the handle in this design, it will stop when the flag is set.
-        // If you needed to wait for it, you would return the JoinHandle here.
         let _ = monitor_handle;
 
         Monitor {
@@ -61,7 +63,8 @@ impl Monitor {
 fn print_dashboard(
     nodes: &[Arc<OmegaNode<String>>],
     stats: &SharedSubmitterStats,
-    start_time: Instant,
+    // UPDATED: start_time is now a u64 nanosecond timestamp
+    start_time_ns: u64,
 ) {
     let mut buffer = String::with_capacity(4096);
 
@@ -69,12 +72,18 @@ fn print_dashboard(
     buffer.push_str("\x1B[2J\x1B[H");
 
     // --- Header ---
-    let elapsed = start_time.elapsed();
+    // UPDATED: Calculate elapsed time using omega_time_ns
+    let elapsed_ns = omega_time_ns().saturating_sub(start_time_ns);
+    let elapsed_ms_total = elapsed_ns / 1_000_000;
+    let elapsed_secs_total = elapsed_ms_total / 1000;
+
+    let display_mins = elapsed_secs_total / 60;
+    let display_secs = elapsed_secs_total % 60;
+    let display_ms = elapsed_ms_total % 1000;
+
     buffer.push_str(&format!(
         "--- Ultra-Ω System Live Monitor --- Running for: {:02}:{:02}.{:03} ---\n\n",
-        elapsed.as_secs() / 60,
-        elapsed.as_secs() % 60,
-        elapsed.as_millis() % 1000
+        display_mins, display_secs, display_ms
     ));
 
     // --- Submission Stats ---

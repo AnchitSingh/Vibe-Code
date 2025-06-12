@@ -20,15 +20,18 @@ use monitor::Monitor;
 
 use omega::borrg::BiasStrategy;
 use omega::borrg::OmegaRng;
-use omega::omega_timer::omega_timer_init;
+// UPDATED: Imported omega_time_ns and removed Instant
+use omega::omega_timer::{omega_time_ns, omega_timer_init};
 use std::io::{stdout, Write}; // Needed for flushing
 use std::sync::mpsc;
 use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicUsize, Ordering},
     Arc,
 };
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+// UPDATED: Kept Duration only for thread::sleep, removed Instant
+use std::time::Duration;
+
 // --- Test Scenario Selection ---
 #[derive(Debug, Clone, Copy)]
 enum TestScenario {
@@ -45,7 +48,7 @@ const CURRENT_SCENARIO: TestScenario = TestScenario::HeterogeneousNodes;
 const NUM_NODES_CONF: usize = 24; // Set to 24 to match monitor display
 const NUM_SUPER_NODES_CONF: usize = 6;
 const NUM_SUBMITTER_THREADS_CONF: usize = 8;
-const TOTAL_TASKS_PER_SUBMITTER_CONF: usize = 1000;
+const TOTAL_TASKS_PER_SUBMITTER_CONF: usize = 1_000;
 
 const AVG_TASK_PROCESSING_MS_CONF: u64 = 75;
 const TASK_PROCESSING_VARIABILITY_MS_CONF: u64 = 50;
@@ -181,7 +184,12 @@ fn main() {
     print!("\x1B[2J\x1B[H");
     stdout().flush().unwrap();
 
-    let overall_start_time = Instant::now();
+    // UPDATED: Added time constants for clarity
+    const NANOS_PER_MSEC: u64 = 1_000_000;
+    const NANOS_PER_SEC: u64 = 1_000_000_000;
+
+    // UPDATED: Use omega_time_ns() for start time
+    let overall_start_time_ns = omega_time_ns();
 
     let (signal_tx, signal_rx) = mpsc::channel();
     let shared_stats = Arc::new(SharedSubmitterStats::new());
@@ -218,6 +226,9 @@ fn main() {
                 cooldown_ms = node_rng.range(1500, 3500);
             }
 
+            // UPDATED: Convert cooldown from ms to nanoseconds for the node
+            let cooldown_ns = cooldown_ms * NANOS_PER_MSEC;
+
             let node_instance = Arc::new(
                 OmegaNode::<String>::new(
                     node_id_val,
@@ -225,7 +236,7 @@ fn main() {
                     min_thr.try_into().unwrap(),
                     max_thr.try_into().unwrap(),
                     signal_tx.clone(),
-                    Some(Duration::from_millis(cooldown_ms)),
+                    Some(cooldown_ns), // Pass cooldown in nanoseconds
                 )
                 .unwrap_or_else(|e| panic!("Failed to create Node {}: {}", i, e)),
             );
@@ -236,10 +247,12 @@ fn main() {
     drop(signal_tx);
 
     // --- START THE LIVE MONITOR ---
+    // UPDATED: Pass the u64 nanosecond start time to the monitor.
+    // NOTE: The Monitor module itself must also be updated to accept a u64.
     let monitor = Monitor::start(
         Arc::clone(&nodes_for_submission),
         Arc::clone(&shared_stats),
-        overall_start_time,
+        overall_start_time_ns,
     );
 
     let system_pulse_surge_threshold = (nodes_for_submission.len() / 2).max(1);
@@ -361,10 +374,6 @@ fn main() {
                             ));
                         }
                         Err(e) => {
-                            // eprintln!(
-                            //     "\n[Submitter {}] Task {} FAILED with unexpected error: {:?}\n",
-                            //     submitter_idx, task_log_id, e
-                            // );
                             stats_clone_for_submitter
                                 .tasks_failed_submission_max_retries
                                 .fetch_add(1, Ordering::Relaxed);
@@ -398,10 +407,14 @@ fn main() {
         handle.join().expect("Submitter thread panicked");
     }
 
+    // UPDATED: Measure submission phase duration using omega_time_ns
+    let submission_phase_duration_ns = omega_time_ns() - overall_start_time_ns;
+
     // Stabilize while monitoring
-    let stabilization_start = Instant::now();
-    while stabilization_start.elapsed() < Duration::from_secs(POST_SUBMISSION_STABILIZATION_S_CONF)
-    {
+    // UPDATED: Use omega_time_ns and u64 arithmetic for stabilization wait
+    let stabilization_start_ns = omega_time_ns();
+    let stabilization_duration_ns = POST_SUBMISSION_STABILIZATION_S_CONF * NANOS_PER_SEC;
+    while (omega_time_ns() - stabilization_start_ns) < stabilization_duration_ns {
         let mut all_idle = true;
         for node in nodes_for_submission.iter() {
             if node.task_queue.len() > 0 || node.active_threads() != node.min_threads {
@@ -418,30 +431,22 @@ fn main() {
     // --- STOP THE LIVE MONITOR ---
     monitor.stop();
     
-    let submission_phase_duration = overall_start_time.elapsed();
     let total_tasks_target_for_scenario =
         (num_submitters_for_scenario * tasks_per_submitter_for_scenario).to_string();
 
-    // println!(
-    //     "--- Ultra-Ω System: Phase D - Scenario: {:?} ---\n",
-    //     CURRENT_SCENARIO
-    // );
-
     println!(
         "Submission Phase completed in {:?}. Target: {} tasks.",
-        submission_phase_duration, total_tasks_target_for_scenario
+        // UPDATED: Format the nanosecond duration for printing
+        Duration::from_nanos(submission_phase_duration_ns),
+        total_tasks_target_for_scenario
     );
-    // println!("System stabilized, proceeding to final checks...\n");
 
-
-    // println!("--- Final System State Check & Stats ---");
     for (idx, node) in nodes_for_submission.iter().enumerate() {
         if node.task_queue.len() != 0 || node.active_threads() != node.min_threads {
-            let wait_time = node
-                .scale_down_cooldown
-                .as_millis()
-                .max(MONITORING_INTERVAL_MS_CONF as u128);
-            thread::sleep(Duration::from_millis(wait_time as u64 + 200));
+            // UPDATED: Calculate wait time from node's nanosecond cooldown value
+            let cooldown_ms_from_node = node.scale_down_cooldown / NANOS_PER_MSEC;
+            let wait_time_ms = cooldown_ms_from_node.max(MONITORING_INTERVAL_MS_CONF);
+            thread::sleep(Duration::from_millis(wait_time_ms + 200));
         }
         assert_eq!(
             node.task_queue.len(),
@@ -471,19 +476,13 @@ fn main() {
         );
     }
 
-    // println!("\nShutting down all OmegaNodes...");
     for node_arc_ref in nodes_for_submission.iter() {
         node_arc_ref.shutdown();
     }
     drop(nodes_for_submission);
 
-    // Don't need to join system_pulse, it will end when the sender (nodes) are dropped.
     let _ = system_pulse_thread;
 
-    // println!(
-    //     "\n--- Stress Test Summary (Scenario: {:?}) ---",
-    //     CURRENT_SCENARIO
-    // );
     let n_nodes_for_k_calc = NUM_NODES_CONF;
      let k_for_routing_log = if n_nodes_for_k_calc <= 1 {
         1
@@ -518,7 +517,9 @@ fn main() {
             .system_maxed_out_events_router
             .load(Ordering::Relaxed)
     );
-    println!("Total Test Duration: {:?}", overall_start_time.elapsed());
+    // UPDATED: Calculate and format total duration for printing
+    let total_duration_ns = omega_time_ns() - overall_start_time_ns;
+    println!("Total Test Duration: {:?}", Duration::from_nanos(total_duration_ns));
 
     println!(
         "\n--- Ultra-Ω System: Phase D - Scenario: {:?} Finished ---",

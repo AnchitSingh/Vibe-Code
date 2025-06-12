@@ -38,21 +38,21 @@ impl fmt::Display for NodeError {
 
 impl std::error::Error for NodeError {}
 
-impl From<QueueError> for NodeError {
-    fn from(q_err: QueueError) -> Self {
-        match q_err {
-            QueueError::Full => NodeError::QueueFull,
-            QueueError::Closed => NodeError::QueueClosed,
-            QueueError::Empty => {
-                eprintln!(
-                    "Warning: Converting QueueError::Empty to NodeError::QueueClosed. Review if this is the desired mapping."
-                );
-                NodeError::QueueClosed
-            }
-            QueueError::SendError => NodeError::SignalSendError,
-        }
-    }
-}
+// impl From<QueueError> for NodeError {
+//     fn from(q_err: QueueError) -> Self {
+//         match q_err {
+//             QueueError::Full => NodeError::QueueFull,
+//             QueueError::Closed => NodeError::QueueClosed,
+//             QueueError::Empty => {
+//                 eprintln!(
+//                     "Warning: Converting QueueError::Empty to NodeError::QueueClosed. Review if this is the desired mapping."
+//                 );
+//                 NodeError::QueueClosed
+//             }
+//             QueueError::SendError => NodeError::SignalSendError,
+//         }
+//     }
+// }
 
 // --- LocalStats ---
 /// Tracks statistics for an OmegaNode, including both all-time and rolling window metrics.
@@ -88,10 +88,10 @@ impl LocalStats {
         self.tasks_submitted.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn record_task_outcome(&self, duration: Duration, success: bool) {
+    pub fn record_task_outcome(&self, duration: u64, success: bool) {
         // Update overall (all-time) stats
         self.total_processing_time_micros
-            .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+            .fetch_add(duration, Ordering::Relaxed);
 
         if success {
             self.tasks_succeeded.fetch_add(1, Ordering::Relaxed);
@@ -108,7 +108,7 @@ impl LocalStats {
                 durations_guard.pop_front(); // Remove oldest if window is full
             }
             if ROLLING_WINDOW_TASK_DURATIONS > 0 { // Only push if window size is > 0
-                durations_guard.push_back(duration.as_micros() as u64);
+                durations_guard.push_back(duration);
             }
         }
 
