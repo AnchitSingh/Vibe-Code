@@ -1,45 +1,50 @@
-// src/node.rs
-
 use crate::queue::{OmegaQueue, PressureLevel, QueueError};
 use crate::signals::{NodeId, SystemSignal};
 use crate::task::Task;
 use crate::types::{LocalStats, NodeError};
+// New import for the omega timer functionality
+use omega::omega_timer::omega_time_ns;
 
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, AtomicU64, Ordering},
     mpsc,
 };
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-// --- OmegaNode ---
+// Cache-friendly atomic time representation (nanoseconds since omega timer epoch)
+type AtomicInstant = AtomicU64;
+
+// The `instant_to_nanos` and `nanos_to_instant` functions have been removed,
+// as we now use `omega_time_ns()` from `omega_timer.rs` directly.
+
 pub struct OmegaNode<Output: Send + 'static> {
     pub node_id: NodeId,
     pub task_queue: OmegaQueue<Output>,
-    worker_threads_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
+    
+    // Hot path atomics - grouped for cache locality
     active_thread_count: Arc<AtomicUsize>,
+    desired_thread_count: Arc<AtomicUsize>,
+    pressure: Arc<AtomicUsize>,
+    is_shutting_down: Arc<AtomicBool>,
+    
+    // Timing atomics - lock-free for better performance
+    last_scaling_time: Arc<AtomicInstant>,
+    last_self_overload_time: Arc<AtomicInstant>,
+    
+    // Cold path data
+    worker_threads_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
     pub min_threads: usize,
     pub max_threads: usize,
     signal_tx: mpsc::Sender<SystemSignal>,
     local_stats: Arc<LocalStats>,
-    is_shutting_down: Arc<AtomicBool>,
-
-    // --- Fields for Scale-Down Logic ---
-    desired_thread_count: Arc<AtomicUsize>,
-    last_scaling_time: Arc<Mutex<Instant>>,
-    last_self_overload_time: Arc<Mutex<Instant>>,
     pub scale_down_cooldown: Duration,
-
-    // --- NEW Fields for Pressure-Based Routing ---
-    pressure: Arc<AtomicUsize>, // New: Current pressure of the node
-                                // queue_capacity is available via self.task_queue.capacity()
-                                // max_threads is already a field: self.max_threads
+    scale_down_cooldown_nanos: u64, // Pre-computed for faster comparisons
 }
-impl<Output: Send + 'static> OmegaNode<Output> {
-    // In OmegaNode struct:
-    // pub scale_down_cooldown: Duration, // Keep it pub for direct access if OmegaNode is mut
 
+
+impl<Output: Send + 'static> OmegaNode<Output> {
     pub fn new(
         node_id: NodeId,
         queue_capacity: usize,
@@ -58,20 +63,23 @@ impl<Output: Send + 'static> OmegaNode<Output> {
         let task_queue = OmegaQueue::new_with_signal(node_id, queue_capacity, signal_tx.clone());
         let local_stats = Arc::new(LocalStats::new());
         let active_thread_count_arc = Arc::new(AtomicUsize::new(0));
-        let worker_threads_handles_arc = Arc::new(Mutex::new(Vec::new()));
+        let worker_threads_handles_arc = Arc::new(Mutex::new(Vec::with_capacity(max_threads)));
         let is_shutting_down_arc = Arc::new(AtomicBool::new(false));
 
-        let desired_thread_count_val = min_threads;
-        let desired_thread_count_arc = Arc::new(AtomicUsize::new(desired_thread_count_val));
-        let now = Instant::now();
-        let distant_past = now.checked_sub(Duration::from_secs(3600)).unwrap_or(now);
+        let desired_thread_count_arc = Arc::new(AtomicUsize::new(min_threads));
 
-        let final_scale_down_cooldown =
-            scale_down_cooldown_override.unwrap_or(Duration::from_secs(5));
+        // Use omega_time_ns for all time points.
+        // This requires omega_timer_init() to have been called at application startup.
+        let now_ns = omega_time_ns();
+        let one_hour_in_ns = Duration::from_secs(3600).as_nanos() as u64;
+        let distant_past_ns = now_ns.saturating_sub(one_hour_in_ns);
 
-        // Pressure will be properly set after initial workers are spawned.
-        // Initialize with a placeholder, then call update_pressure().
+        let final_scale_down_cooldown = scale_down_cooldown_override.unwrap_or(Duration::from_secs(5));
+        let scale_down_cooldown_nanos = final_scale_down_cooldown.as_nanos() as u64;
+
         let pressure_arc = Arc::new(AtomicUsize::new(0));
+        let last_scaling_time_arc = Arc::new(AtomicInstant::new(now_ns));
+        let last_self_overload_time_arc = Arc::new(AtomicInstant::new(distant_past_ns));
 
         let node = Self {
             node_id,
@@ -84,394 +92,363 @@ impl<Output: Send + 'static> OmegaNode<Output> {
             local_stats,
             is_shutting_down: is_shutting_down_arc,
             desired_thread_count: desired_thread_count_arc,
-            last_scaling_time: Arc::new(Mutex::new(now)), // last_scaling_time is now, because we are "scaling" to min_threads
-            last_self_overload_time: Arc::new(Mutex::new(distant_past)),
+            last_scaling_time: last_scaling_time_arc,
+            last_self_overload_time: last_self_overload_time_arc,
             scale_down_cooldown: final_scale_down_cooldown,
+            scale_down_cooldown_nanos,
             pressure: pressure_arc,
         };
 
+        // Pre-spawn minimum threads
         for _ in 0..node.min_threads {
-            node.spawn_worker_thread(false); // false as not triggered by overload
+            node.spawn_worker_thread_internal(false);
         }
 
-        // Ensure desired_thread_count matches active after initial spawn
         node.desired_thread_count.store(
-            node.active_thread_count.load(Ordering::SeqCst),
-            Ordering::SeqCst,
+            node.active_thread_count.load(Ordering::Acquire),
+            Ordering::Release,
         );
 
-        // Set initial pressure accurately after workers are spawned
-        node.update_pressure();
+        node.update_pressure_fast();
 
         Ok(node)
     }
 
-    /// Updates the node's internal pressure value.
-    /// Should be called whenever queue length or active thread count changes.
-    fn update_pressure(&self) {
+    #[inline]
+    fn update_pressure_fast(&self) {
         let q_len = self.task_queue.len();
         let active_threads = self.active_thread_count.load(Ordering::Relaxed);
-        let current_pressure = q_len + active_threads;
+        let current_pressure = q_len.saturating_add(active_threads);
         self.pressure.store(current_pressure, Ordering::Relaxed);
-        // Optional: Log pressure changes for debugging
-        // println!("[Node {}] Pressure updated: {} (Q: {}, A: {})", self.node_id, current_pressure, q_len, active_threads);
     }
 
-    /// Gets the current pressure of the node.
-    /// This is intended for external callers (like a router/sampler).
+    #[inline]
     pub fn get_pressure(&self) -> usize {
         self.pressure.load(Ordering::Relaxed)
     }
 
-    /// Gets the maximum possible pressure for this node.
-    /// A node is considered "full" or "saturated" if its pressure reaches this value.
+    #[inline]
     pub fn max_pressure(&self) -> usize {
-        self.task_queue.capacity() + self.max_threads
+        self.task_queue.capacity().saturating_add(self.max_threads)
     }
-    // In OmegaNode impl
-    // src/node.rs
-    // Inside impl<Output: Send + 'static> OmegaNode<Output>
-
-    // src/node.rs
-    // Inside impl<Output: Send + 'static> OmegaNode<Output>
 
     fn spawn_worker_thread(&self, triggered_by_overload: bool) {
-        let current_active_val = self.active_thread_count.load(Ordering::Relaxed);
-        if current_active_val >= self.max_threads {
-            return;
-        }
-
-        let previous_active_count_val = self.active_thread_count.fetch_add(1, Ordering::SeqCst);
-
-        if previous_active_count_val >= self.max_threads {
-            self.active_thread_count.fetch_sub(1, Ordering::SeqCst);
-            return;
-        }
-
-        let current_active_threads_after_increment = previous_active_count_val + 1;
-        self.desired_thread_count
-            .store(current_active_threads_after_increment, Ordering::SeqCst);
-
-        let now = Instant::now();
-        {
-            let mut last_scale_guard = self
-                .last_scaling_time
-                .lock()
-                .expect("Mutex poisoned for last_scaling_time");
-            *last_scale_guard = now;
-        }
-        if triggered_by_overload {
-            let mut last_overload_guard = self
-                .last_self_overload_time
-                .lock()
-                .expect("Mutex poisoned for last_self_overload_time");
-            *last_overload_guard = now;
-        }
-
-        self.update_pressure();
-
-        let worker_id_for_name = current_active_threads_after_increment;
-        let node_id_clone = self.node_id;
-        let task_queue_clone = self.task_queue.clone();
-        let local_stats_clone = Arc::clone(&self.local_stats); // Still needed for LocalStats updates
-        let signal_tx_clone = self.signal_tx.clone();
-        let is_shutting_down_clone = Arc::clone(&self.is_shutting_down);
-        // active_thread_count_clone_for_worker is no longer strictly needed here for OpportunisticInfo
-        // but the worker loop still uses it for its final decrement.
-        let active_thread_count_clone_for_worker = Arc::clone(&self.active_thread_count);
-        let worker_check_context = self.clone_for_worker_checks();
-
-        let join_handle = thread::Builder::new()
-            .name(format!(
-                "omega-node-{}-worker-{}",
-                self.node_id.0, worker_id_for_name
-            ))
-            .spawn(move || {
-                let mut retired_by_choice = false;
-                loop {
-                    if task_queue_clone.is_empty() {
-                        if is_shutting_down_clone.load(Ordering::Relaxed) {
-                            break;
-                        }
-                        if !is_shutting_down_clone.load(Ordering::Relaxed) {
-                            worker_check_context.consider_reducing_desired_threads();
-                            if worker_check_context.check_and_attempt_self_retirement() {
-                                retired_by_choice = true;
-                                worker_check_context.update_pressure_from_context();
-                                break;
-                            }
-                        }
-                        std::thread::yield_now();
-                    }
-
-                    let task_option = task_queue_clone.dequeue();
-                    if task_option.is_some() {
-                        worker_check_context.update_pressure_from_context();
-                    }
-
-                    if task_option.is_none() {
-                        if is_shutting_down_clone.load(Ordering::Relaxed) {
-                            break;
-                        }
-                        continue;
-                    }
-
-                    match task_option {
-                        Some(task) => {
-                            let task_id = task.id;
-                            let start_time = Instant::now();
-                            let result = task.execute();
-                            let duration = start_time.elapsed();
-                            let success = result.is_ok();
-
-                            // Record outcome locally (LocalStats still tracks rolling windows internally)
-                            if !is_shutting_down_clone.load(Ordering::Relaxed) {
-                                local_stats_clone.record_task_outcome(duration, success);
-
-                                // Construct signals WITHOUT OpportunisticInfo
-                                let signal = if success {
-                                    SystemSignal::TaskCompleted {
-                                        node_id: node_id_clone,
-                                        task_id,
-                                        duration_micros: duration.as_micros() as u64,
-                                        // No opportunistic field
-                                    }
-                                } else {
-                                    SystemSignal::TaskFailed {
-                                        node_id: node_id_clone,
-                                        task_id,
-                                        // No opportunistic field
-                                    }
-                                };
-                                // Send signal (ignore send errors during shutdown, though less likely now)
-                                let _ = signal_tx_clone.send(signal);
-                            }
-
-                            // Check for scale-down after processing a task
-                            if !is_shutting_down_clone.load(Ordering::Relaxed) {
-                                worker_check_context.consider_reducing_desired_threads();
-                                if worker_check_context.check_and_attempt_self_retirement() {
-                                    retired_by_choice = true;
-                                    worker_check_context.update_pressure_from_context();
-                                    break;
-                                }
-                            }
-                        }
-                        None => {} // Already handled
-                    }
-                } // End of worker loop
-
-                if !retired_by_choice {
-                    active_thread_count_clone_for_worker.fetch_sub(1, Ordering::SeqCst);
-                    worker_check_context.update_pressure_from_context();
-                }
-                // Optional: Log worker stopping
-                // println!("[Node {}] Worker {} stopping. Retired by choice: {}", node_id_clone, worker_id_for_name, retired_by_choice);
-            })
-            .expect("Failed to spawn worker thread");
-
-        let mut workers_guard = self
-            .worker_threads_handles
-            .lock()
-            .expect("Worker threads handles mutex poisoned");
-        workers_guard.push(join_handle);
+        self.spawn_worker_thread_internal(triggered_by_overload);
     }
-    /// Creates a lightweight clone of the necessary Arcs/values for worker checks.
-    // In OmegaNode impl
-    fn clone_for_worker_checks(&self) -> WorkerCheckContext<Output> {
-        WorkerCheckContext {
+
+    #[inline]
+    fn spawn_worker_thread_internal(&self, triggered_by_overload: bool) {
+        let current_active = self.active_thread_count.load(Ordering::Acquire);
+        if current_active >= self.max_threads {
+            return;
+        }
+
+        // Atomic increment with bounds check
+        let previous_active = match self.active_thread_count.compare_exchange_weak(
+            current_active,
+            current_active + 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(prev) => prev,
+            Err(_) => return, // Another thread beat us to it
+        };
+
+        if previous_active >= self.max_threads {
+            self.active_thread_count.fetch_sub(1, Ordering::AcqRel);
+            return;
+        }
+
+        let new_thread_count = previous_active + 1;
+        self.desired_thread_count.store(new_thread_count, Ordering::Release);
+
+        let now_nanos = omega_time_ns();
+        self.last_scaling_time.store(now_nanos, Ordering::Release);
+        
+        if triggered_by_overload {
+            self.last_self_overload_time.store(now_nanos, Ordering::Release);
+        }
+
+        self.update_pressure_fast();
+
+        // Create worker context with all necessary data
+        let worker_context = WorkerContext {
             node_id: self.node_id,
+            task_queue: self.task_queue.clone(),
+            local_stats: Arc::clone(&self.local_stats),
+            signal_tx: self.signal_tx.clone(),
+            is_shutting_down: Arc::clone(&self.is_shutting_down),
             active_thread_count: Arc::clone(&self.active_thread_count),
             desired_thread_count: Arc::clone(&self.desired_thread_count),
             min_threads: self.min_threads,
-            task_queue: self.task_queue.clone(),
             last_scaling_time: Arc::clone(&self.last_scaling_time),
             last_self_overload_time: Arc::clone(&self.last_self_overload_time),
-            scale_down_cooldown: self.scale_down_cooldown,
-            node_pressure_atomic: Arc::clone(&self.pressure), // <<< --- PASS THE PRESSURE ARC ---
+            scale_down_cooldown_nanos: self.scale_down_cooldown_nanos,
+            pressure: Arc::clone(&self.pressure),
+        };
+
+        let join_handle = thread::Builder::new()
+            .name(format!("omega-node-{}-worker-{}", self.node_id.0, new_thread_count))
+            .spawn(move || worker_thread_main(worker_context))
+            .expect("Failed to spawn worker thread");
+
+        // Only lock when we know we need to add the handle
+        if let Ok(mut workers_guard) = self.worker_threads_handles.try_lock() {
+            workers_guard.push(join_handle);
+        } else {
+            // If we can't get the lock immediately, spawn a detached thread to handle it
+            let handles = Arc::clone(&self.worker_threads_handles);
+            thread::spawn(move || {
+                if let Ok(mut workers_guard) = handles.lock() {
+                    workers_guard.push(join_handle);
+                }
+            });
         }
     }
 
-    
-    // In OmegaNode impl
-    // src/node.rs
-    // Inside impl<Output: Send + 'static> OmegaNode<Output>
-
     pub fn submit_task(&self, task: Task<Output>) -> Result<(), NodeError> {
-        if self.is_shutting_down.load(Ordering::Relaxed) {
+        if self.is_shutting_down.load(Ordering::Acquire) {
             return Err(NodeError::NodeShuttingDown);
         }
-        self.local_stats.task_submitted(); // This only increments a counter, doesn't affect pressure directly
+        
+        self.local_stats.task_submitted();
 
         match self.task_queue.enqueue(task) {
             Ok(()) => {
-                self.update_pressure(); // <<< --- CALL TO UPDATE PRESSURE ---
+                self.update_pressure_fast();
                 Ok(())
             }
             Err(QueueError::Full) => {
-                {
-                    let mut last_overload_guard =
-                        self.last_self_overload_time.lock().expect("Mutex poisoned");
-                    *last_overload_guard = Instant::now();
-                }
-                // spawn_worker_thread will call update_pressure internally if it scales up
-                self.spawn_worker_thread(true);
+                let now_nanos = omega_time_ns();
+                self.last_self_overload_time.store(now_nanos, Ordering::Release);
+                self.spawn_worker_thread_internal(true);
                 Err(NodeError::QueueFull)
             }
             Err(QueueError::Closed) => Err(NodeError::QueueClosed),
             Err(QueueError::SendError) => Err(NodeError::SignalSendError),
             Err(QueueError::Empty) => {
-                // This error from enqueue is unexpected and likely indicates a logic error
-                // if the queue is not supposed to return Empty on enqueue.
-                // Mapping to QueueClosed as a safe fallback, but should be investigated.
-                eprintln!(
-                    "OmegaNode::submit_task received unexpected QueueError::Empty from enqueue"
-                );
+                eprintln!("OmegaNode::submit_task received unexpected QueueError::Empty from enqueue");
                 Err(NodeError::QueueClosed)
             }
         }
     }
-    pub fn shutdown(&self) {
-        if self
-            .is_shutting_down
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
-            .is_ok()
-        {
-            self.task_queue.close();
-            // Also set desired threads to 0 to encourage quick exit of remaining workers
-            self.desired_thread_count.store(0, Ordering::SeqCst);
 
-            let mut workers_guard = self
-                .worker_threads_handles
-                .lock()
-                .expect("Worker threads mutex poisoned");
-            for handle in workers_guard.drain(..) {
-                if let Err(e) = handle.join() {
-                    eprintln!(
-                        "Node {} worker thread panicked during shutdown: {:?}",
-                        self.node_id, e
-                    );
+    pub fn shutdown(&self) {
+        if self.is_shutting_down.compare_exchange(
+            false,
+            true,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ).is_ok() {
+            self.task_queue.close();
+            self.desired_thread_count.store(0, Ordering::Release);
+
+            if let Ok(mut workers_guard) = self.worker_threads_handles.lock() {
+                for handle in workers_guard.drain(..) {
+                    if let Err(e) = handle.join() {
+                        eprintln!("Node {} worker thread panicked during shutdown: {:?}", self.node_id, e);
+                    }
                 }
             }
         }
     }
 
+    #[inline]
     pub fn id(&self) -> NodeId {
         self.node_id
     }
+
+    #[inline]
     pub fn active_threads(&self) -> usize {
-        self.active_thread_count.load(Ordering::Relaxed)
+        self.active_thread_count.load(Ordering::Acquire)
     }
+
+    #[inline]
     pub fn desired_threads(&self) -> usize {
-        self.desired_thread_count.load(Ordering::Relaxed)
+        self.desired_thread_count.load(Ordering::Acquire)
     }
 }
 
-// Helper struct to pass necessary Arcs and values to worker threads for checks
-// This avoids cloning the entire OmegaNode or too many individual Arcs in the spawn closure.
-// src/node.rs
-
-// Helper struct to pass necessary Arcs and values to worker threads for checks
-struct WorkerCheckContext<Output: Send + 'static> {
+// Consolidated worker context to reduce parameter passing
+struct WorkerContext<Output: Send + 'static> {
     node_id: NodeId,
+    task_queue: OmegaQueue<Output>,
+    local_stats: Arc<LocalStats>,
+    signal_tx: mpsc::Sender<SystemSignal>,
+    is_shutting_down: Arc<AtomicBool>,
     active_thread_count: Arc<AtomicUsize>,
     desired_thread_count: Arc<AtomicUsize>,
     min_threads: usize,
-    task_queue: OmegaQueue<Output>, // Used for task_queue.len() in pressure update
-    last_scaling_time: Arc<Mutex<Instant>>,
-    last_self_overload_time: Arc<Mutex<Instant>>,
-    scale_down_cooldown: Duration,
-    // --- NEW field for WorkerCheckContext ---
-    node_pressure_atomic: Arc<AtomicUsize>, // To allow worker to update main node's pressure
+    last_scaling_time: Arc<AtomicInstant>,
+    last_self_overload_time: Arc<AtomicInstant>,
+    scale_down_cooldown_nanos: u64,
+    pressure: Arc<AtomicUsize>,
 }
 
-// Implement methods on WorkerCheckContext that mirror OmegaNode's check methods
-impl<OQ: Send + 'static> WorkerCheckContext<OQ> {
-    fn consider_reducing_desired_threads(&self) {
-        // This logic is identical to OmegaNode::consider_reducing_desired_threads
-        // but operates on the fields of WorkerCheckContext.
-        let _current_active = self.active_thread_count.load(Ordering::SeqCst); // Not used directly in this decision path
-        let current_desired = self.desired_thread_count.load(Ordering::SeqCst);
+#[inline(never)] // Keep this cold to optimize hot paths
+fn worker_thread_main<Output: Send + 'static>(ctx: WorkerContext<Output>) {
+    let mut retired_by_choice = false;
+    let mut idle_cycles = 0u32;
+    const MAX_IDLE_CYCLES: u32 = 10;
 
-        if current_desired <= self.min_threads {
-            return;
-        }
-
-        let now = Instant::now();
-        {
-            let last_scale_guard = self.last_scaling_time.lock().expect("Mutex poisoned");
-            if now.duration_since(*last_scale_guard) < self.scale_down_cooldown {
-                return;
+    loop {
+        // Fast path: try to get work immediately
+        let task_option = ctx.task_queue.dequeue();
+        
+        if let Some(task) = task_option {
+            idle_cycles = 0;
+            execute_task(&ctx, task);
+            update_pressure_and_check_retirement(&ctx, &mut retired_by_choice);
+            if retired_by_choice {
+                break;
             }
-        }
-        {
-            let last_overload_guard = self.last_self_overload_time.lock().expect("Mutex poisoned");
-            if now.duration_since(*last_overload_guard) < self.scale_down_cooldown {
-                return;
-            }
+            continue;
         }
 
-        match self.task_queue.pressure_level() {
-            PressureLevel::Empty | PressureLevel::Low => {
-                if self
-                    .desired_thread_count
-                    .compare_exchange(
-                        current_desired,
-                        current_desired - 1,
-                        Ordering::SeqCst,
-                        Ordering::Relaxed,
-                    )
-                    .is_ok()
-                {
-                    let mut last_scale_guard =
-                        self.last_scaling_time.lock().expect("Mutex poisoned");
-                    *last_scale_guard = Instant::now();
-                    // println!("[Node {}] Worker ctx decided to scale down. Desired threads: {} -> {}", self.node_id, current_desired, current_desired - 1);
-                }
-            }
-            _ => {}
+        // No work available - check if we should exit
+        if ctx.is_shutting_down.load(Ordering::Acquire) {
+            break;
         }
+
+        // Consider scaling decisions only after some idle cycles
+        idle_cycles = idle_cycles.saturating_add(1);
+        if idle_cycles >= MAX_IDLE_CYCLES {
+            consider_scaling_decisions(&ctx);
+            if check_self_retirement(&ctx) {
+                retired_by_choice = true;
+                break;
+            }
+            idle_cycles = 0;
+        }
+
+        // Yield to scheduler
+        thread::yield_now();
     }
 
-    fn update_pressure_from_context(&self) {
-        let q_len = self.task_queue.len();
-        let active_threads = self.active_thread_count.load(Ordering::Relaxed);
-        let current_pressure = q_len + active_threads;
-        self.node_pressure_atomic
-            .store(current_pressure, Ordering::Relaxed);
-        // Optional: Log from worker context for debugging
-        // println!("[Node {} WorkerCtx] Pressure updated: {} (Q: {}, A: {})", self.node_id, current_pressure, q_len, active_threads);
+    // Clean up if not retired by choice
+    if !retired_by_choice {
+        ctx.active_thread_count.fetch_sub(1, Ordering::AcqRel);
+        update_pressure_only(&ctx);
     }
-    fn check_and_attempt_self_retirement(&self) -> bool {
-        // This logic is identical to OmegaNode::check_and_attempt_self_retirement
-        let current_active = self.active_thread_count.load(Ordering::SeqCst);
-        let desired_active = self.desired_thread_count.load(Ordering::SeqCst);
+}
 
-        if current_active <= self.min_threads || current_active <= desired_active {
-            return false;
-        }
+#[inline]
+fn execute_task<Output: Send + 'static>(ctx: &WorkerContext<Output>, task: Task<Output>) {
+    let task_id = task.id;
+    // Measure duration using the consistent omega timer
+    let start_ns = omega_time_ns();
+    let result = task.execute();
+    let end_ns = omega_time_ns();
+    let duration = Duration::from_nanos(end_ns.saturating_sub(start_ns));
+    let success = result.is_ok();
 
-        match self.active_thread_count.compare_exchange(
-            current_active,
-            current_active - 1,
-            Ordering::SeqCst,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => {
-                let mut last_scale_guard = self.last_scaling_time.lock().expect("Mutex poisoned");
-                *last_scale_guard = Instant::now();
-                // println!("[Node {}] Worker ctx retiring. Active threads: {} -> {}", self.node_id, current_active, current_active - 1);
-                true
+    if !ctx.is_shutting_down.load(Ordering::Acquire) {
+        ctx.local_stats.record_task_outcome(duration, success);
+
+        let signal = if success {
+            SystemSignal::TaskCompleted {
+                node_id: ctx.node_id,
+                task_id,
+                duration_micros: duration.as_micros() as u64,
             }
-            Err(_) => false,
+        } else {
+            SystemSignal::TaskFailed {
+                node_id: ctx.node_id,
+                task_id,
+            }
+        };
+
+        let _ = ctx.signal_tx.send(signal);
+    }
+}
+
+#[inline]
+fn update_pressure_and_check_retirement<Output: Send + 'static>(
+    ctx: &WorkerContext<Output>,
+    retired_by_choice: &mut bool,
+) {
+    update_pressure_only(ctx);
+    
+    if !ctx.is_shutting_down.load(Ordering::Acquire) {
+        consider_scaling_decisions(ctx);
+        if check_self_retirement(ctx) {
+            *retired_by_choice = true;
         }
+    }
+}
+
+#[inline]
+fn update_pressure_only<Output: Send + 'static>(ctx: &WorkerContext<Output>) {
+    let q_len = ctx.task_queue.len();
+    let active_threads = ctx.active_thread_count.load(Ordering::Relaxed);
+    let current_pressure = q_len.saturating_add(active_threads);
+    ctx.pressure.store(current_pressure, Ordering::Relaxed);
+}
+
+fn consider_scaling_decisions<Output: Send + 'static>(ctx: &WorkerContext<Output>) {
+    let current_desired = ctx.desired_thread_count.load(Ordering::Acquire);
+    
+    if current_desired <= ctx.min_threads {
+        return;
+    }
+
+    let now_nanos = omega_time_ns();
+    
+    // Lock-free cooldown checks
+    let last_scale_nanos = ctx.last_scaling_time.load(Ordering::Acquire);
+    if now_nanos.saturating_sub(last_scale_nanos) < ctx.scale_down_cooldown_nanos {
+        return;
+    }
+    
+    let last_overload_nanos = ctx.last_self_overload_time.load(Ordering::Acquire);
+    if now_nanos.saturating_sub(last_overload_nanos) < ctx.scale_down_cooldown_nanos {
+        return;
+    }
+
+    // Check queue pressure and attempt to reduce desired threads
+    match ctx.task_queue.pressure_level() {
+        PressureLevel::Empty | PressureLevel::Low => {
+            if ctx.desired_thread_count.compare_exchange_weak(
+                current_desired,
+                current_desired - 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ).is_ok() {
+                ctx.last_scaling_time.store(now_nanos, Ordering::Release);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn check_self_retirement<Output: Send + 'static>(ctx: &WorkerContext<Output>) -> bool {
+    let current_active = ctx.active_thread_count.load(Ordering::Acquire);
+    let desired_active = ctx.desired_thread_count.load(Ordering::Acquire);
+
+    if current_active <= ctx.min_threads || current_active <= desired_active {
+        return false;
+    }
+
+    // Attempt to retire this thread
+    match ctx.active_thread_count.compare_exchange_weak(
+        current_active,
+        current_active - 1,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    ) {
+        Ok(_) => {
+            let now_nanos = omega_time_ns();
+            ctx.last_scaling_time.store(now_nanos, Ordering::Release);
+            update_pressure_only(ctx);
+            true
+        }
+        Err(_) => false,
     }
 }
 
 impl<Output: Send + 'static> Drop for OmegaNode<Output> {
     fn drop(&mut self) {
-        if !self.is_shutting_down.load(Ordering::Relaxed) {
-            // println!("[Node {}] Dropping, initiating shutdown.", self.node_id);
+        if !self.is_shutting_down.load(Ordering::Acquire) {
             self.shutdown();
         }
     }

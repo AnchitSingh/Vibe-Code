@@ -45,8 +45,8 @@ impl OmegaSystemPulse {
     }
 
     pub fn run(mut self) {
-        println!("[SystemPulse] Started. Print interval: {:?}, Surge threshold: {} node(s) overloaded.",
-            self.print_interval, self.surge_overload_threshold_count);
+        // println!("[SystemPulse] Started. Print interval: {:?}, Surge threshold: {} node(s) overloaded.",
+        //     self.print_interval, self.surge_overload_threshold_count);
 
         let system_start_time = Instant::now();
 
@@ -77,10 +77,10 @@ impl OmegaSystemPulse {
                     // Fall through to periodic print check
                 }
                 Err(RecvTimeoutError::Disconnected) => {
-                    println!("[SystemPulse] Signal channel disconnected. Performing final summary and exiting.");
+                    // println!("[SystemPulse] Signal channel disconnected. Performing final summary and exiting.");
                     self.print_summary(system_start_time.elapsed().as_millis());
                     if self.surge_mode_active {
-                        println!("[SystemPulse] Final State: Surge Mode OFF!");
+                        // println!("[SystemPulse] Final State: Surge Mode OFF!");
                     }
                     break; 
                 }
@@ -95,25 +95,25 @@ impl OmegaSystemPulse {
             if should_be_in_surge_mode != self.surge_mode_active {
                 self.surge_mode_active = should_be_in_surge_mode;
                 if self.surge_mode_active {
-                    println!("[SystemPulse] Surge Mode ON! ({} node(s) overloaded)", self.overloaded_nodes.len());
+                    // println!("[SystemPulse] Surge Mode ON! ({} node(s) overloaded)", self.overloaded_nodes.len());
                 } else {
-                    println!("[SystemPulse] Surge Mode OFF! ({} node(s) overloaded)", self.overloaded_nodes.len());
+                    // println!("[SystemPulse] Surge Mode OFF! ({} node(s) overloaded)", self.overloaded_nodes.len());
                 }
             }
         }
-        println!("[SystemPulse] Stopped.");
+        // println!("[SystemPulse] Stopped.");
     }
 
     fn print_summary(&self, elapsed_ms: u128) {
         // Global Avg Task Time is no longer calculated from opportunistic info
-        println!(
-            "[SystemPulse] {{ {}ms }} Nodes Seen: {} | Overloaded: {} | TaskCompleted Signals: {} | TaskFailed Signals: {}",
-            elapsed_ms,
-            self.all_nodes_seen.len(),
-            self.overloaded_nodes.len(),
-            self.total_task_completed_signals,
-            self.total_task_failed_signals,
-        );
+        // println!(
+        //     "[SystemPulse] {{ {}ms }} Nodes Seen: {} | Overloaded: {} | TaskCompleted Signals: {} | TaskFailed Signals: {}",
+        //     elapsed_ms,
+        //     self.all_nodes_seen.len(),
+        //     self.overloaded_nodes.len(),
+        //     self.total_task_completed_signals,
+        //     self.total_task_failed_signals,
+        // );
     }
 }
 

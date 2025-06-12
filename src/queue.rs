@@ -44,7 +44,7 @@ pub struct OmegaQueue<Output> {
     id: QueueId,
     node_id: NodeId,
     tasks: Arc<Mutex<VecDeque<Task<Output>>>>,
-    capacity: usize,
+    pub capacity: usize,
     low_watermark_percentage: f32,
     high_watermark_percentage: f32,
     signal_tx: mpsc::Sender<SystemSignal>,

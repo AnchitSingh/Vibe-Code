@@ -1,5 +1,7 @@
 // src/main.rs
 
+// Add the new monitor module
+mod monitor;
 mod node;
 mod queue;
 mod signals;
@@ -13,12 +15,17 @@ use system_pulse::OmegaSystemPulse;
 use task::{Priority, Task, TaskError};
 use types::NodeError;
 
-use omega::borrg::OmegaRng;
+// Import the monitor
+use monitor::Monitor;
+
 use omega::borrg::BiasStrategy;
+use omega::borrg::OmegaRng;
+use omega::omega_timer::omega_timer_init;
+use std::io::{stdout, Write}; // Needed for flushing
 use std::sync::mpsc;
 use std::sync::{
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
-    atomic::{AtomicUsize, Ordering},
 };
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -34,23 +41,11 @@ enum TestScenario {
 const CURRENT_SCENARIO: TestScenario = TestScenario::HeterogeneousNodes;
 
 // --- Stress Test Configuration ---
-// // Core Scale Configuration
-// const NUM_NODES_CONF: usize = 640;
-// // Assuming a similar ratio of Super Nodes, e.g., 1 in every 8.
-// const NUM_SUPER_NODES_CONF: usize = 80; // (640 / 8)
-// // This is the key change from the log output.
-// const NUM_SUBMITTER_THREADS_CONF: usize = 96;
-// // To get 960,000 total tasks with 96 submitters.
-// const TOTAL_TASKS_PER_SUBMITTER_CONF: usize = 10_000;
-
-// Core Scale Configuration
-const NUM_NODES_CONF: usize = 16;
-// Assuming a similar ratio of Super Nodes, e.g., 1 in every 8.
-const NUM_SUPER_NODES_CONF: usize = 6; // (640 / 8)
-// This is the key change from the log output.
+// Adjust these as needed
+const NUM_NODES_CONF: usize = 24; // Set to 24 to match monitor display
+const NUM_SUPER_NODES_CONF: usize = 6;
 const NUM_SUBMITTER_THREADS_CONF: usize = 8;
-// To get 960,000 total tasks with 96 submitters.
-const TOTAL_TASKS_PER_SUBMITTER_CONF: usize = 100;
+const TOTAL_TASKS_PER_SUBMITTER_CONF: usize = 1000;
 
 const AVG_TASK_PROCESSING_MS_CONF: u64 = 75;
 const TASK_PROCESSING_VARIABILITY_MS_CONF: u64 = 50;
@@ -64,11 +59,9 @@ const POST_SUBMISSION_STABILIZATION_S_CONF: u64 = 20;
 // Specific for FailingTasks scenario
 const TASK_FAILURE_PROBABILITY: f64 = 0.05;
 
-// Specific for SustainedLoad scenario
-// const SUSTAINED_LOAD_DURATION_S_CONF: u64 = 30;
-
 // --- Shared Stats ---
-struct SharedSubmitterStats {
+// Made public so monitor module can see it
+pub struct SharedSubmitterStats {
     tasks_attempted_submission: AtomicUsize,
     tasks_successfully_submitted: AtomicUsize,
     tasks_failed_submission_max_retries: AtomicUsize,
@@ -87,6 +80,7 @@ impl SharedSubmitterStats {
 }
 
 // --- Routing Function (Power of K Choices - remains the same) ---
+// ... This function is unchanged ...
 fn route_task_to_least_loaded(
     nodes: &Vec<Arc<OmegaNode<String>>>,
     task: Task<String>,
@@ -112,22 +106,43 @@ fn route_task_to_least_loaded(
             let (mut prev, mut boundary) = (u64::MAX, (n_total_nodes - k) as u64);
 
             for _ in 0..k {
-                let mut next = rng.range_biased(prev.wrapping_add(1), boundary,BiasStrategy::Power(3.14));
-                if 4*next >= boundary as u64 { // Weaker bias against upper 1/4
-                    next = rng.range_biased(prev.wrapping_add(1), boundary,BiasStrategy::Power(3.14));
+                let mut next;
+                if _try_num > 2 {
+                    // println!("try num greater than {}", _try_num);
+                    next = rng.range_biased(prev.wrapping_add(1), boundary, BiasStrategy::Power(0.05));
+                } else {
+                    next =
+                        rng.range_biased(prev.wrapping_add(1), boundary, BiasStrategy::Power(3.14));
+                    if 4 * next >= boundary as u64 {
+                        // Weaker bias against upper 1/4
+                        next = rng.range_biased(
+                            prev.wrapping_add(1),
+                            boundary,
+                            BiasStrategy::Power(3.14),
+                        );
+                    }
+                    if 4 * next >= boundary as u64 {
+                        // Weaker bias against upper 1/4
+                        next =
+                            rng.range_biased(prev.wrapping_add(1), boundary, BiasStrategy::Stepped);
+                    }
+                    if 4 * next >= boundary as u64 {
+                        // Weaker bias against upper 1/4
+                        next = rng.range_biased(
+                            prev.wrapping_add(1),
+                            boundary,
+                            BiasStrategy::Weighted,
+                        );
+                    }
+                    if 4 * next >= boundary as u64 {
+                        // Weaker bias against upper 1/4
+                        next = rng.range_biased(
+                            prev.wrapping_add(1),
+                            boundary,
+                            BiasStrategy::Exponential,
+                        );
+                    }
                 }
-                if 4*next >= boundary as u64 { // Weaker bias against upper 1/4
-                    next = rng.range_biased(prev.wrapping_add(1), boundary,BiasStrategy::Stepped);
-                }
-                if 4*next >= boundary as u64 { // Weaker bias against upper 1/4
-                    next = rng.range_biased(prev.wrapping_add(1), boundary,BiasStrategy::Weighted);
-                }
-                if 4*next >= boundary as u64 { // Weaker bias against upper 1/4
-                    next = rng.range_biased(prev.wrapping_add(1), boundary,BiasStrategy::Exponential);
-                }
-                // if 3*idx > k && next <= 2*prev.wrapping_add(1) { // Same complex condition
-                //     next = rng.range_biased(prev.wrapping_add(1), boundary);
-                // }
                 chosen_indices.push(next as usize);
                 prev = next;
                 boundary += 1;
@@ -159,11 +174,13 @@ fn route_task_to_least_loaded(
     Err(NodeError::SystemMaxedOut)
 }
 
+
 fn main() {
-    println!(
-        "--- Ultra-Ω System: Phase D - Scenario: {:?} ---",
-        CURRENT_SCENARIO
-    );
+    omega_timer_init();
+    // Clear screen at the very beginning
+    print!("\x1B[2J\x1B[H");
+    stdout().flush().unwrap();
+
     let overall_start_time = Instant::now();
 
     let (signal_tx, signal_rx) = mpsc::channel();
@@ -175,36 +192,26 @@ fn main() {
         let mut local_nodes_vec: Vec<Arc<OmegaNode<String>>> = Vec::new();
         let mut node_rng = OmegaRng::new(0x9e79b97f469c15);
 
-        // println!(
-        //     "Creating {} OmegaNodes ({} super, {} normal)...",
-        //     num_nodes_for_scenario,
-        //     NUM_SUPER_NODES_CONF,
-        //     num_nodes_for_scenario - NUM_SUPER_NODES_CONF
-        // );
-
         for i in 0..num_nodes_for_scenario {
             let node_id_val = NodeId::new();
-            let (queue_cap, min_thr, max_thr, cooldown_ms, node_type_str);
+            let (queue_cap, min_thr, max_thr, cooldown_ms, _node_type_str);
 
             if matches!(CURRENT_SCENARIO, TestScenario::HeterogeneousNodes) {
                 if i < NUM_SUPER_NODES_CONF {
-                    // First few are "super" nodes
-                    node_type_str = "SUPER";
+                    _node_type_str = "SUPER";
                     queue_cap = node_rng.range(20, 30);
                     min_thr = 2;
                     max_thr = node_rng.range(4, 6);
                     cooldown_ms = node_rng.range(1000, 2000);
                 } else {
-                    // The rest are "normal" nodes
-                    node_type_str = "NORMAL";
+                    _node_type_str = "NORMAL";
                     queue_cap = node_rng.range(5, 10);
                     min_thr = 1;
                     max_thr = node_rng.range(1, 3);
                     cooldown_ms = node_rng.range(2500, 4500);
                 }
             } else {
-                // For other scenarios, use randomized default
-                node_type_str = "DEFAULT";
+                _node_type_str = "DEFAULT";
                 queue_cap = node_rng.range(5, 15);
                 min_thr = 1;
                 max_thr = node_rng.range(2, 4);
@@ -220,42 +227,22 @@ fn main() {
                     signal_tx.clone(),
                     Some(Duration::from_millis(cooldown_ms)),
                 )
-                .unwrap_or_else(|e| panic!("Failed to create {} Node {}: {}", node_type_str, i, e)),
+                .unwrap_or_else(|e| panic!("Failed to create Node {}: {}", i, e)),
             );
-
-            // println!(
-            //     "  {} Node {} (ID {}): Min/Max: {}/{}. QCap: {}. MaxPressure: {}. Cooldown: {}ms",
-            //     node_type_str,
-            //     i,
-            //     node_instance.id().0,
-            //     node_instance.min_threads,
-            //     node_instance.max_threads,
-            //     node_instance.task_queue.capacity(),
-            //     node_instance.max_pressure(),
-            //     cooldown_ms
-            // );
-
             local_nodes_vec.push(node_instance);
         }
         Arc::new(local_nodes_vec)
     };
     drop(signal_tx);
 
-    let n_nodes_for_k_calc = nodes_for_submission.len();
-    let k_for_routing_log = if n_nodes_for_k_calc <= 1 {
-        1
-    } else {
-        (2.0f64)
-            .max((n_nodes_for_k_calc as f64).log2().floor())
-            .floor() as usize
-    }
-    .min(n_nodes_for_k_calc);
-    println!(
-        "Routing strategy: Power of K Choices, K = {}",
-        k_for_routing_log
+    // --- START THE LIVE MONITOR ---
+    let monitor = Monitor::start(
+        Arc::clone(&nodes_for_submission),
+        Arc::clone(&shared_stats),
+        overall_start_time,
     );
 
-    let system_pulse_surge_threshold = (n_nodes_for_k_calc / 2).max(1);
+    let system_pulse_surge_threshold = (nodes_for_submission.len() / 2).max(1);
     let system_pulse = OmegaSystemPulse::new(
         signal_rx,
         MONITORING_INTERVAL_MS_CONF,
@@ -271,10 +258,6 @@ fn main() {
     let num_submitters_for_scenario = NUM_SUBMITTER_THREADS_CONF;
     let tasks_per_submitter_for_scenario = TOTAL_TASKS_PER_SUBMITTER_CONF;
 
-    println!(
-        "\n--- Launching {} Submitter Threads (tasks determined by scenario) ---",
-        num_submitters_for_scenario
-    );
     let mut submitter_handles: Vec<JoinHandle<()>> = Vec::new();
 
     for submitter_idx in 0..num_submitters_for_scenario {
@@ -302,7 +285,6 @@ fn main() {
                         }
                     }
                     _ => {
-                        // Baseline, FailingTasks, SustainedLoad, HeterogeneousNodes use similar timing
                         let base_proc_time = AVG_TASK_PROCESSING_MS_CONF;
                         let variability = if TASK_PROCESSING_VARIABILITY_MS_CONF > 0 {
                             task_rng.range(0, TASK_PROCESSING_VARIABILITY_MS_CONF * 2)
@@ -315,18 +297,18 @@ fn main() {
                             .max(10)
                     }
                 };
-                
-                    let should_fail_this_task =
-                        if matches!(CURRENT_SCENARIO, TestScenario::FailingTasks) {
-                            task_rng.bool(TASK_FAILURE_PROBABILITY)
-                        } else {
-                            false
-                        };
-            let create_task_fn = || {
-                let task_log_id_ok = task_log_id.clone();
-                let task_log_id_fail = task_log_id.clone();
-        
-                let task_fn_payload = move || {
+
+                let should_fail_this_task =
+                    if matches!(CURRENT_SCENARIO, TestScenario::FailingTasks) {
+                        task_rng.bool(TASK_FAILURE_PROBABILITY)
+                    } else {
+                        false
+                    };
+                let create_task_fn = || {
+                    let task_log_id_ok = task_log_id.clone();
+                    let task_log_id_fail = task_log_id.clone();
+
+                    let task_fn_payload = move || {
                         thread::sleep(Duration::from_millis(processing_ms));
                         if should_fail_this_task {
                             Err(TaskError::ExecutionFailed(Box::new(std::io::Error::new(
@@ -368,7 +350,6 @@ fn main() {
                             }
                             submission_retries += 1;
                             if submission_retries > MAX_SUBMISSION_RETRIES_CONF {
-                                // eprintln!("[Submitter {}] Task {} failed submission after max retries (due to {:?}).", submitter_idx, task_log_id, actual_error_value);
                                 stats_clone_for_submitter
                                     .tasks_failed_submission_max_retries
                                     .fetch_add(1, Ordering::Relaxed);
@@ -380,10 +361,10 @@ fn main() {
                             ));
                         }
                         Err(e) => {
-                            eprintln!(
-                                "[Submitter {}] Task {} FAILED submission with truly unexpected error: {:?}",
-                                submitter_idx, task_log_id, e
-                            );
+                            // eprintln!(
+                            //     "\n[Submitter {}] Task {} FAILED with unexpected error: {:?}\n",
+                            //     submitter_idx, task_log_id, e
+                            // );
                             stats_clone_for_submitter
                                 .tasks_failed_submission_max_retries
                                 .fetch_add(1, Ordering::Relaxed);
@@ -404,16 +385,10 @@ fn main() {
                 if submission_delay > 0 {
                     thread::sleep(Duration::from_millis(submission_delay));
                 }
-            }; // End of submitter_loop_logic
+            };
 
-            match CURRENT_SCENARIO {
-                // TestScenario::SustainedLoad => { ... } // This logic would be different
-                _ => {
-                    // For Baseline, ExtremeDurations, FailingTasks, HeterogeneousNodes (fixed task count)
-                    for _task_idx_in_submitter in 0..tasks_per_submitter_for_scenario {
-                        submitter_loop_logic();
-                    }
-                }
+            for _ in 0..tasks_per_submitter_for_scenario {
+                submitter_loop_logic();
             }
         });
         submitter_handles.push(handle);
@@ -422,114 +397,52 @@ fn main() {
     for handle in submitter_handles {
         handle.join().expect("Submitter thread panicked");
     }
-    let submission_phase_duration = overall_start_time.elapsed();
-    let total_tasks_target_for_scenario = match CURRENT_SCENARIO {
-        // TestScenario::SustainedLoad => "N/A (duration based)".to_string(),
-        _ => (num_submitters_for_scenario * tasks_per_submitter_for_scenario).to_string(),
-    };
 
-    println!(
-        "\n--- All task submissions attempted (took {:?}). Total Tasks Target for Scenario: {} ---",
-        submission_phase_duration, total_tasks_target_for_scenario
-    );
-    println!(
-        "--- Waiting for system to process remaining tasks and stabilize (approx {}s)... ---",
-        POST_SUBMISSION_STABILIZATION_S_CONF
-    );
-
-    let monitoring_start_time = Instant::now();
-    let mut last_monitor_output_time = Instant::now();
-
-    loop {
-        let mut all_queues_empty_locally = true;
-        let mut all_at_min_threads_locally = true;
-        let mut total_q_len = 0;
-        let mut total_active_threads = 0;
-
+    // Stabilize while monitoring
+    let stabilization_start = Instant::now();
+    while stabilization_start.elapsed() < Duration::from_secs(POST_SUBMISSION_STABILIZATION_S_CONF)
+    {
+        let mut all_idle = true;
         for node in nodes_for_submission.iter() {
-            let q_len = node.task_queue.len();
-            let active = node.active_threads();
-            total_q_len += q_len;
-            total_active_threads += active;
-            if q_len > 0 {
-                all_queues_empty_locally = false;
-            }
-            if active != node.min_threads {
-                all_at_min_threads_locally = false;
+            if node.task_queue.len() > 0 || node.active_threads() != node.min_threads {
+                all_idle = false;
+                break;
             }
         }
-
-        if last_monitor_output_time.elapsed() >= Duration::from_millis(MONITORING_INTERVAL_MS_CONF)
-        {
-            // println!(
-            //     "[Main-Monitor @ {:?}] Total QLen: {}, Total ActiveThreads: {}",
-            //     overall_start_time.elapsed(),
-            //     total_q_len,
-            //     total_active_threads
-            // );
-            // for (idx, node) in nodes_for_submission.iter().enumerate() {
-            //     println!(
-            //         "  Node {} (ID {}): P: {}/{}, A: {}, D: {}, Q: {}",
-            //         idx,
-            //         node.id().0,
-            //         node.get_pressure(),
-            //         node.max_pressure(),
-            //         node.active_threads(),
-            //         node.desired_threads(),
-            //         node.task_queue.len()
-            //     );
-            // }
-            last_monitor_output_time = Instant::now();
+        if all_idle {
+            break; // Exit stabilization early if system is idle
         }
-
-        if all_queues_empty_locally && all_at_min_threads_locally {
-            let expected_total_min_threads: usize =
-                nodes_for_submission.iter().map(|n| n.min_threads).sum();
-            // if total_active_threads == expected_total_min_threads {
-            //     println!(
-            //         "[Main-Monitor @ {:?}] All nodes appear idle and at min_threads. Exiting monitor loop.",
-            //         overall_start_time.elapsed()
-            //     );
-            //     break;
-            // }
-        }
-        if monitoring_start_time.elapsed()
-            >= Duration::from_secs(POST_SUBMISSION_STABILIZATION_S_CONF)
-        {
-            // println!(
-            //     "[Main-Monitor @ {:?}] Stabilization period ended. Proceeding to final check.",
-            //     overall_start_time.elapsed()
-            // );
-            break;
-        }
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(200));
     }
 
-    println!("\n--- Final System State Check & Stats ---");
+    // --- STOP THE LIVE MONITOR ---
+    monitor.stop();
+    
+    let submission_phase_duration = overall_start_time.elapsed();
+    let total_tasks_target_for_scenario =
+        (num_submitters_for_scenario * tasks_per_submitter_for_scenario).to_string();
+
+    // println!(
+    //     "--- Ultra-Ω System: Phase D - Scenario: {:?} ---\n",
+    //     CURRENT_SCENARIO
+    // );
+
+    println!(
+        "Submission Phase completed in {:?}. Target: {} tasks.",
+        submission_phase_duration, total_tasks_target_for_scenario
+    );
+    // println!("System stabilized, proceeding to final checks...\n");
+
+
+    // println!("--- Final System State Check & Stats ---");
     for (idx, node) in nodes_for_submission.iter().enumerate() {
         if node.task_queue.len() != 0 || node.active_threads() != node.min_threads {
             let wait_time = node
                 .scale_down_cooldown
                 .as_millis()
                 .max(MONITORING_INTERVAL_MS_CONF as u128);
-            // println!(
-            //     "[Main] Node {} (ID {}) not fully idle, waiting extra {}ms...",
-            //     idx,
-            //     node.id().0,
-            //     wait_time
-            // );
             thread::sleep(Duration::from_millis(wait_time as u64 + 200));
         }
-        // println!(
-        //     "Node {} (ID {}): P: {}/{}, Active: {}, Desired: {}, Q_Len: {}",
-        //     idx,
-        //     node.id().0,
-        //     node.get_pressure(),
-        //     node.max_pressure(),
-        //     node.active_threads(),
-        //     node.desired_threads(),
-        //     node.task_queue.len()
-        // );
         assert_eq!(
             node.task_queue.len(),
             0,
@@ -558,23 +471,28 @@ fn main() {
         );
     }
 
-    println!("\nShutting down all OmegaNodes...");
+    // println!("\nShutting down all OmegaNodes...");
     for node_arc_ref in nodes_for_submission.iter() {
         node_arc_ref.shutdown();
     }
     drop(nodes_for_submission);
 
-    // println!("\nWaiting for SystemPulse to finish...");
-    // if let Err(e) = system_pulse_thread.join() {
-    //     eprintln!("SystemPulse thread panicked: {:?}", e);
-    // } else {
-    //     println!("SystemPulse thread finished gracefully.");
-    // }
+    // Don't need to join system_pulse, it will end when the sender (nodes) are dropped.
+    let _ = system_pulse_thread;
 
-    println!(
-        "\n--- Stress Test Summary (Scenario: {:?}) ---",
-        CURRENT_SCENARIO
-    );
+    // println!(
+    //     "\n--- Stress Test Summary (Scenario: {:?}) ---",
+    //     CURRENT_SCENARIO
+    // );
+    let n_nodes_for_k_calc = NUM_NODES_CONF;
+     let k_for_routing_log = if n_nodes_for_k_calc <= 1 {
+        1
+    } else {
+        (2.0f64)
+            .max((n_nodes_for_k_calc as f64).log2().floor())
+            .floor() as usize
+    }
+    .min(n_nodes_for_k_calc);
     println!("Configuration: K for Routing = {}", k_for_routing_log);
     println!(
         "Total Tasks Attempted for Submission: {}",
