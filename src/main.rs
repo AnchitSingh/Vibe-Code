@@ -45,18 +45,18 @@ const CURRENT_SCENARIO: TestScenario = TestScenario::HeterogeneousNodes;
 
 // --- Stress Test Configuration ---
 // Adjust these as needed
-const NUM_NODES_CONF: usize = 24; // Set to 24 to match monitor display
-const NUM_SUPER_NODES_CONF: usize = 6;
-const NUM_SUBMITTER_THREADS_CONF: usize = 8;
-const TOTAL_TASKS_PER_SUBMITTER_CONF: usize = 1_000;
+const NUM_NODES_CONF: usize = 8; // Set to 24 to match monitor display
+const NUM_SUPER_NODES_CONF: usize = 2;
+const NUM_SUBMITTER_THREADS_CONF: usize = 16;
+const TOTAL_TASKS_PER_SUBMITTER_CONF: usize = 50;
 
 const AVG_TASK_PROCESSING_MS_CONF: u64 = 75;
 const TASK_PROCESSING_VARIABILITY_MS_CONF: u64 = 50;
 const SUBMISSION_DELAY_MS_CONF: u64 = 5;
 const SUBMISSION_DELAY_VARIABILITY_MS_CONF: u64 = 5;
 const SYSTEM_MAXED_OUT_BACKOFF_MS_CONF: u64 = 250;
-const MAX_SUBMISSION_RETRIES_CONF: usize = 5;
-const MONITORING_INTERVAL_MS_CONF: u64 = 1000;
+const MAX_SUBMISSION_RETRIES_CONF: usize = 10;
+const MONITORING_INTERVAL_MS_CONF: u64 = 20_000;
 const POST_SUBMISSION_STABILIZATION_S_CONF: u64 = 20;
 
 // Specific for FailingTasks scenario
@@ -171,7 +171,24 @@ fn route_task_to_least_loaded(
         if let Some(idx) = best_node_index {
             return nodes[idx].submit_task(task);
         } else {
-            continue;
+            // Magical Part
+            for &node_idx in &chosen_indices {
+                let node = &nodes[n_total_nodes-node_idx-1];
+                let pressure = node.get_pressure();
+                let max_pressure = node.max_pressure();
+    
+                if pressure < max_pressure {
+                    if pressure < min_pressure_found {
+                        min_pressure_found = pressure;
+                        best_node_index = Some(node_idx);
+                    }
+                }
+            }
+            if let Some(idx) = best_node_index {
+                return nodes[idx].submit_task(task);
+            }else{
+                continue;
+            }
         }
     }
     Err(NodeError::SystemMaxedOut)
