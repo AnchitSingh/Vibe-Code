@@ -22,7 +22,7 @@ pub struct Monitor {
 impl Monitor {
     /// Spawns a new thread that periodically collects and displays system stats.
     pub fn start(
-        nodes: Arc<Vec<Arc<OmegaNode<String>>>>,
+        nodes: Arc<Vec<Arc<OmegaNode>>>,
         stats: Arc<SharedSubmitterStats>,
         // UPDATED: start_time is now a u64 nanosecond timestamp
         start_time_ns: u64,
@@ -61,7 +61,7 @@ impl Monitor {
 }
 
 fn print_dashboard(
-    nodes: &[Arc<OmegaNode<String>>],
+    nodes: &[Arc<OmegaNode>],
     stats: &SharedSubmitterStats,
     // UPDATED: start_time is now a u64 nanosecond timestamp
     start_time_ns: u64,

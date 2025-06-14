@@ -1,29 +1,22 @@
 // src/system_pulse.rs
 
-use crate::signals::{SystemSignal}; // OpportunisticInfo is no longer imported
-
+use crate::signals::SystemSignal;
+use std::collections::HashSet;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
-use omega::OmegaHashSet;
-// --- OmegaSystemPulse ---
+
 pub struct OmegaSystemPulse {
     signal_rx: Receiver<SystemSignal>,
     print_interval: Duration,
     surge_overload_threshold_count: usize,
-
-    // Internal state - simplified
-    overloaded_nodes: OmegaHashSet<u64, ()>,
-    all_nodes_seen: OmegaHashSet<u64, ()>,
-    // Removed: sum_all_node_avg_task_time_micros
-    // Removed: count_node_avg_time_reports
-    total_task_completed_signals: u64, // New: count occurrences
-    total_task_failed_signals: u64,    // New: count occurrences
+    // Internal state
+    overloaded_nodes: HashSet<usize>,
+    all_nodes_seen: HashSet<usize>,
+    total_tasks_dequeued: u64,
+    total_tasks_processed: u64,
     surge_mode_active: bool,
     last_print_time: Instant,
 }
-
-// Helper methods on SystemSignal (get_node_id) are still in signals.rs
-// No get_opportunistic_info() is needed here anymore.
 
 impl OmegaSystemPulse {
     pub fn new(
@@ -35,86 +28,75 @@ impl OmegaSystemPulse {
             signal_rx,
             print_interval: Duration::from_millis(print_interval_ms),
             surge_overload_threshold_count,
-            overloaded_nodes: OmegaHashSet::new_u64_map(1024),
-            all_nodes_seen: OmegaHashSet::new_u64_map(1024),
-            total_task_completed_signals: 0, // Initialize new counter
-            total_task_failed_signals: 0,    // Initialize new counter
+            overloaded_nodes: HashSet::new(),
+            all_nodes_seen: HashSet::new(),
+            total_tasks_dequeued: 0,
+            total_tasks_processed: 0,
             surge_mode_active: false,
             last_print_time: Instant::now(),
         }
     }
 
     pub fn run(mut self) {
-        // println!("[SystemPulse] Started. Print interval: {:?}, Surge threshold: {} node(s) overloaded.",
-        //     self.print_interval, self.surge_overload_threshold_count);
-
         let system_start_time = Instant::now();
 
         loop {
+            // Wait for a signal or timeout for printing
             match self.signal_rx.recv_timeout(self.print_interval) {
                 Ok(signal) => {
-                    let node_id = signal.get_node_id(); // Still useful
-                    self.all_nodes_seen.insert(node_id.0 as u64, ());
+                    let node_id_val = signal.get_node_id().0;
+                    self.all_nodes_seen.insert(node_id_val);
 
-                    // Process signal types
                     match signal {
                         SystemSignal::NodeOverloaded { .. } => {
-                            self.overloaded_nodes.insert(node_id.0 as u64, ());
+                            self.overloaded_nodes.insert(node_id_val);
                         }
                         SystemSignal::NodeIdle { .. } => {
-                            self.overloaded_nodes.remove(&(node_id.0 as u64));
+                            self.overloaded_nodes.remove(&node_id_val);
                         }
-                        SystemSignal::TaskCompleted { .. } => {
-                            self.total_task_completed_signals += 1;
+                        SystemSignal::TaskDequeuedByWorker { .. } => {
+                            self.total_tasks_dequeued += 1;
                         }
-                        SystemSignal::TaskFailed { .. } => {
-                            self.total_task_failed_signals += 1;
+                        SystemSignal::TaskProcessed { .. } => {
+                            self.total_tasks_processed += 1;
                         }
                     }
-                    // No OpportunisticInfo to extract or process
                 }
                 Err(RecvTimeoutError::Timeout) => {
-                    // Fall through to periodic print check
+                    // This is expected, just proceed to the periodic checks
                 }
                 Err(RecvTimeoutError::Disconnected) => {
-                    // println!("[SystemPulse] Signal channel disconnected. Performing final summary and exiting.");
-                    self.print_summary(system_start_time.elapsed().as_millis());
-                    if self.surge_mode_active {
-                        // println!("[SystemPulse] Final State: Surge Mode OFF!");
-                    }
-                    break; 
+                    // Channel is disconnected, main thread has likely shut down. Exit gracefully.
+                    break;
                 }
             }
 
+            // Check if it's time to print the summary
             if self.last_print_time.elapsed() >= self.print_interval {
                 self.print_summary(system_start_time.elapsed().as_millis());
                 self.last_print_time = Instant::now();
             }
 
+            // Check for surge mode toggle
             let should_be_in_surge_mode = self.overloaded_nodes.len() >= self.surge_overload_threshold_count;
             if should_be_in_surge_mode != self.surge_mode_active {
                 self.surge_mode_active = should_be_in_surge_mode;
-                if self.surge_mode_active {
-                    // println!("[SystemPulse] Surge Mode ON! ({} node(s) overloaded)", self.overloaded_nodes.len());
-                } else {
-                    // println!("[SystemPulse] Surge Mode OFF! ({} node(s) overloaded)", self.overloaded_nodes.len());
-                }
+                // Optional: log surge mode changes
             }
         }
-        // println!("[SystemPulse] Stopped.");
     }
 
     fn print_summary(&self, elapsed_ms: u128) {
-        // Global Avg Task Time is no longer calculated from opportunistic info
+        // This is commented out to keep the main test output clean, but is useful for debugging.
+        
         // println!(
-        //     "[SystemPulse] {{ {}ms }} Nodes Seen: {} | Overloaded: {} | TaskCompleted Signals: {} | TaskFailed Signals: {}",
+        //     "[SystemPulse] {{ {}ms }} Nodes Seen: {} | Overloaded: {} | Dequeued: {} | Processed: {}",
         //     elapsed_ms,
         //     self.all_nodes_seen.len(),
         //     self.overloaded_nodes.len(),
-        //     self.total_task_completed_signals,
-        //     self.total_task_failed_signals,
+        //     self.total_tasks_dequeued,
+        //     self.total_tasks_processed,
         // );
+        
     }
 }
-
-// No tests in this file; SystemPulse is observed via main.rs execution.

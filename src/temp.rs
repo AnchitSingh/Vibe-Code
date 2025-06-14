@@ -38,10 +38,10 @@ enum TestScenario {
 }
 const CURRENT_SCENARIO: TestScenario = TestScenario::HeterogeneousNodes;
 
-const NUM_NODES_CONF: usize = 8;
-const NUM_SUPER_NODES_CONF: usize = 2;
-const NUM_SUBMITTER_THREADS_CONF: usize = 16;
-const TOTAL_TASKS_PER_SUBMITTER_CONF: usize = 50;
+const NUM_NODES_CONF: usize = 16;
+const NUM_SUPER_NODES_CONF: usize = 4;
+const NUM_SUBMITTER_THREADS_CONF: usize = 8;
+const TOTAL_TASKS_PER_SUBMITTER_CONF: usize = 100;
 const AVG_TASK_PROCESSING_MS_CONF: u64 = 75;
 const TASK_PROCESSING_VARIABILITY_MS_CONF: u64 = 50;
 const SUBMISSION_DELAY_MS_CONF: u64 = 5;

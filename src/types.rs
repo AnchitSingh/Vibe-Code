@@ -1,16 +1,14 @@
 // src/types.rs
 
-use crate::queue::QueueError; // For NodeError From impl
+use crate::queue::QueueError;
 use std::collections::VecDeque;
 use std::fmt;
-use std::sync::Mutex; // For VecDeques in LocalStats
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::Duration;
 
 // --- Constants for Rolling Windows ---
-// These define the size of the windows for LocalStats' internal tracking.
-const ROLLING_WINDOW_TASK_DURATIONS: usize = 100; // Calculate average over last 100 tasks
-const ROLLING_WINDOW_FAILURES: usize = 50;       // Count failures in last 50 tasks
+const ROLLING_WINDOW_TASK_DURATIONS: usize = 100;
+const ROLLING_WINDOW_FAILURES: usize = 50;
 
 // --- NodeError ---
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,8 +17,8 @@ pub enum NodeError {
     QueueClosed,
     NodeShuttingDown,
     SignalSendError,
-    NoNodesAvailable, // Added in previous step
-    SystemMaxedOut,   // Added in previous step
+    NoNodesAvailable,
+    SystemMaxedOut,
 }
 
 impl fmt::Display for NodeError {
@@ -38,22 +36,6 @@ impl fmt::Display for NodeError {
 
 impl std::error::Error for NodeError {}
 
-// impl From<QueueError> for NodeError {
-//     fn from(q_err: QueueError) -> Self {
-//         match q_err {
-//             QueueError::Full => NodeError::QueueFull,
-//             QueueError::Closed => NodeError::QueueClosed,
-//             QueueError::Empty => {
-//                 eprintln!(
-//                     "Warning: Converting QueueError::Empty to NodeError::QueueClosed. Review if this is the desired mapping."
-//                 );
-//                 NodeError::QueueClosed
-//             }
-//             QueueError::SendError => NodeError::SignalSendError,
-//         }
-//     }
-// }
-
 // --- LocalStats ---
 /// Tracks statistics for an OmegaNode, including both all-time and rolling window metrics.
 #[derive(Debug)]
@@ -61,12 +43,12 @@ pub struct LocalStats {
     tasks_submitted: AtomicUsize,
     tasks_processed: AtomicUsize,
     tasks_succeeded: AtomicUsize,
-    tasks_failed: AtomicUsize,               // All-time failures
-    total_processing_time_micros: AtomicU64, // All-time total duration
+    tasks_failed: AtomicUsize,
+    total_processing_time_micros: AtomicU64,
 
     // Rolling window statistics (kept for potential internal node heuristics)
-    recent_task_durations_micros: Mutex<VecDeque<u64>>, // Stores durations in micros
-    recent_task_outcomes: Mutex<VecDeque<u8>>,         // Stores 1 for failure, 0 for success
+    recent_task_durations_micros: Mutex<VecDeque<u64>>,
+    recent_task_outcomes: Mutex<VecDeque<u8>>,
 }
 
 impl LocalStats {
@@ -89,7 +71,6 @@ impl LocalStats {
     }
 
     pub fn record_task_outcome(&self, duration: u64, success: bool) {
-        // Update overall (all-time) stats
         self.total_processing_time_micros
             .fetch_add(duration, Ordering::Relaxed);
 
@@ -99,32 +80,29 @@ impl LocalStats {
             self.tasks_failed.fetch_add(1, Ordering::Relaxed);
         }
 
-        // Update rolling window for durations
         {
             let mut durations_guard = self.recent_task_durations_micros.lock().expect(
                 "Mutex poisoned: recent_task_durations_micros",
             );
             if durations_guard.len() == ROLLING_WINDOW_TASK_DURATIONS && !durations_guard.is_empty() {
-                durations_guard.pop_front(); // Remove oldest if window is full
+                durations_guard.pop_front();
             }
-            if ROLLING_WINDOW_TASK_DURATIONS > 0 { // Only push if window size is > 0
+            if ROLLING_WINDOW_TASK_DURATIONS > 0 {
                 durations_guard.push_back(duration);
             }
         }
 
-        // Update rolling window for failure tracking
         {
             let mut outcomes_guard = self
                 .recent_task_outcomes
                 .lock()
                 .expect("Mutex poisoned: recent_task_outcomes");
             if outcomes_guard.len() == ROLLING_WINDOW_FAILURES && !outcomes_guard.is_empty() {
-                outcomes_guard.pop_front(); // Remove oldest
+                outcomes_guard.pop_front();
             }
-            if ROLLING_WINDOW_FAILURES > 0 { // Only push if window size is > 0
+            if ROLLING_WINDOW_FAILURES > 0 {
                  outcomes_guard.push_back(if success { 0 } else { 1 });
             }
         }
     }
-
 }

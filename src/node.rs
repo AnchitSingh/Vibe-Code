@@ -2,7 +2,8 @@
 
 use crate::queue::{OmegaQueue, QueueError};
 use crate::signals::{NodeId, SystemSignal};
-use crate::task::Task;
+// TaskExecutionOutcome is now used by the worker
+use crate::task::{Task, TaskExecutionOutcome};
 use crate::types::{LocalStats, NodeError};
 use omega::omega_timer::omega_time_ns;
 use std::sync::{
@@ -11,10 +12,8 @@ use std::sync::{
     mpsc,
 };
 use std::thread::{self, JoinHandle};
-// UPDATED: Removed Instant. Kept Duration only for thread::sleep.
 use std::time::Duration;
 
-// The PressureLevel enum is correctly defined at the node level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PressureLevel {
     Empty,
@@ -24,10 +23,10 @@ pub enum PressureLevel {
     Full,
 }
 
-// --- OmegaNode ---
-pub struct OmegaNode<Output: Send + 'static> {
+// --- OmegaNode (No longer generic) ---
+pub struct OmegaNode {
     pub node_id: NodeId,
-    pub task_queue: OmegaQueue<Output>,
+    pub task_queue: OmegaQueue<Task>, // Now holds the concrete Task struct
     worker_threads_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
     active_thread_count: Arc<AtomicUsize>,
     pub min_threads: usize,
@@ -36,22 +35,19 @@ pub struct OmegaNode<Output: Send + 'static> {
     local_stats: Arc<LocalStats>,
     is_shutting_down: Arc<AtomicBool>,
     desired_thread_count: Arc<AtomicUsize>,
-    // UPDATED: Using u64 for timestamps in nanoseconds from omega_time_ns.
     last_scaling_time: Arc<Mutex<u64>>,
     last_self_overload_time: Arc<Mutex<u64>>,
-    // UPDATED: Using u64 for duration in nanoseconds.
     pub scale_down_cooldown: u64,
     pressure: Arc<AtomicUsize>,
 }
 
-impl<Output: Send + 'static> OmegaNode<Output> {
+impl OmegaNode {
     pub fn new(
         node_id: NodeId,
         queue_capacity: usize,
         min_threads: usize,
         max_threads: usize,
         signal_tx: mpsc::Sender<SystemSignal>,
-        // UPDATED: Override now takes u64 for nanoseconds.
         scale_down_cooldown_override: Option<u64>,
     ) -> Result<Self, String> {
         if min_threads == 0 { return Err("min_threads cannot be 0".to_string()); }
@@ -59,8 +55,6 @@ impl<Output: Send + 'static> OmegaNode<Output> {
 
         let task_queue = OmegaQueue::new_with_signal(node_id, queue_capacity, signal_tx.clone());
         let pressure_arc = Arc::new(AtomicUsize::new(0));
-
-        // Nanoseconds in one second, for convenience.
         const NANOS_PER_SEC: u64 = 1_000_000_000;
 
         let node = Self {
@@ -74,11 +68,8 @@ impl<Output: Send + 'static> OmegaNode<Output> {
             local_stats: Arc::new(LocalStats::new()),
             is_shutting_down: Arc::new(AtomicBool::new(false)),
             desired_thread_count: Arc::new(AtomicUsize::new(min_threads)),
-            // UPDATED: Initialize timestamps with omega_time_ns().
             last_scaling_time: Arc::new(Mutex::new(omega_time_ns())),
-            // Initialize to one hour in the past to allow immediate scaling if needed.
             last_self_overload_time: Arc::new(Mutex::new(omega_time_ns().saturating_sub(3600 * NANOS_PER_SEC))),
-            // UPDATED: Cooldown is now in nanoseconds. Default is 5 seconds.
             scale_down_cooldown: scale_down_cooldown_override.unwrap_or(5 * NANOS_PER_SEC),
             pressure: pressure_arc,
         };
@@ -86,11 +77,12 @@ impl<Output: Send + 'static> OmegaNode<Output> {
         for _ in 0..node.min_threads {
             node.spawn_worker_thread(false);
         }
-        node.update_pressure(); // Set initial pressure after initial spawn
+        node.update_pressure();
 
         Ok(node)
     }
 
+    // Unchanged methods (update_pressure, get_pressure, etc.)
     fn update_pressure(&self) {
         let q = self.task_queue.len() as f64;
         let c = self.active_thread_count.load(Ordering::Relaxed) as f64;
@@ -121,7 +113,6 @@ impl<Output: Send + 'static> OmegaNode<Output> {
         self.active_thread_count.fetch_add(1, Ordering::SeqCst);
         self.desired_thread_count.store(self.active_threads(), Ordering::SeqCst);
 
-        // UPDATED: Use omega_time_ns for timestamping.
         let now = omega_time_ns();
         *self.last_scaling_time.lock().unwrap() = now;
         if triggered_by_overload {
@@ -139,7 +130,8 @@ impl<Output: Send + 'static> OmegaNode<Output> {
         self.worker_threads_handles.lock().unwrap().push(handle);
     }
 
-    pub fn submit_task(&self, task: Task<Output>) -> Result<(), NodeError> {
+    /// Internal method to enqueue a task. Called by UltraOmegaSystem.
+    pub(crate) fn submit_task(&self, task: Task) -> Result<(), NodeError> {
         if self.is_shutting_down.load(Ordering::Relaxed) { return Err(NodeError::NodeShuttingDown); }
         self.local_stats.task_submitted();
         match self.task_queue.enqueue(task) {
@@ -151,7 +143,6 @@ impl<Output: Send + 'static> OmegaNode<Output> {
                 Ok(())
             }
             Err(QueueError::Full) => {
-                // UPDATED: Use omega_time_ns for timestamping.
                 *self.last_self_overload_time.lock().unwrap() = omega_time_ns();
                 self.spawn_worker_thread(true);
                 Err(NodeError::QueueFull)
@@ -169,7 +160,7 @@ impl<Output: Send + 'static> OmegaNode<Output> {
         }
     }
 
-    fn clone_for_worker(&self) -> WorkerContext<Output> {
+    fn clone_for_worker(&self) -> WorkerContext {
         WorkerContext {
             node_id: self.node_id,
             active_thread_count: Arc::clone(&self.active_thread_count),
@@ -192,14 +183,14 @@ impl<Output: Send + 'static> OmegaNode<Output> {
     pub fn desired_threads(&self) -> usize { self.desired_thread_count.load(Ordering::Relaxed) }
 }
 
-struct WorkerContext<Output: Send + 'static> {
+// --- WorkerContext (No longer generic) ---
+struct WorkerContext {
     node_id: NodeId,
     active_thread_count: Arc<AtomicUsize>,
     desired_thread_count: Arc<AtomicUsize>,
     min_threads: usize,
     max_threads: usize,
-    task_queue: OmegaQueue<Output>,
-    // UPDATED: Fields now use u64 for nanosecond-based time.
+    task_queue: OmegaQueue<Task>,
     last_scaling_time: Arc<Mutex<u64>>,
     last_self_overload_time: Arc<Mutex<u64>>,
     scale_down_cooldown: u64,
@@ -209,14 +200,19 @@ struct WorkerContext<Output: Send + 'static> {
     local_stats: Arc<LocalStats>,
 }
 
-impl<O: Send + 'static> WorkerContext<O> {
+impl WorkerContext {
     fn run_loop(self) {
         let mut retired_by_choice = false;
         loop {
             if self.is_shutting_down.load(Ordering::Relaxed) { break; }
 
+            // Send Dequeued signal *before* processing
             if let Some(task) = self.task_queue.dequeue() {
                 self.update_pressure_from_context();
+                let _ = self.signal_tx.send(SystemSignal::TaskDequeuedByWorker {
+                    node_id: self.node_id,
+                    task_id: task.id,
+                });
                 self.process_task(task);
             } else {
                 if self.is_shutting_down.load(Ordering::Relaxed) { break; }
@@ -226,7 +222,7 @@ impl<O: Send + 'static> WorkerContext<O> {
                     retired_by_choice = true;
                     break;
                 }
-                thread::sleep(Duration::from_millis(5)); // Prevent busy-wait when idle
+                thread::sleep(Duration::from_millis(5));
             }
         }
 
@@ -236,47 +232,46 @@ impl<O: Send + 'static> WorkerContext<O> {
         }
     }
 
-    fn process_task(&self, task: Task<O>) {
+    fn process_task(&self, task: Task) {
         let task_id = task.id;
-        // UPDATED: Calculate duration using omega_time_ns.
         let start_time_ns = omega_time_ns();
-        let result = task.execute();
+
+        // The task's run method executes the work, sends the result,
+        // and returns the internal outcome.
+        let outcome = task.run();
+
         let duration_ns = omega_time_ns().saturating_sub(start_time_ns);
 
-        if !self.is_shutting_down.load(Ordering::Relaxed) {
-            // NOTE: This assumes `LocalStats::record_task_outcome` has been updated
-            // to accept a u64 duration in nanoseconds instead of a `std::time::Duration`.
-            self.local_stats.record_task_outcome(duration_ns, result.is_ok());
+        // For local stats, we can still decide how to count success.
+        // Let's count 'Success' as success, and all others as failure.
+        let was_logically_successful = outcome == TaskExecutionOutcome::Success;
+        self.local_stats.record_task_outcome(duration_ns, was_logically_successful);
 
-            let signal = if result.is_ok() {
-                // Convert nanoseconds to microseconds for the signal.
-                SystemSignal::TaskCompleted { node_id: self.node_id, task_id, duration_micros: duration_ns / 1000 }
-            } else {
-                SystemSignal::TaskFailed { node_id: self.node_id, task_id }
+        // Always send TaskProcessed signal, regardless of outcome.
+        // This signal is about the worker's lifecycle, not the task's logical result.
+        if !self.is_shutting_down.load(Ordering::Relaxed) {
+            let signal = SystemSignal::TaskProcessed {
+                node_id: self.node_id,
+                task_id,
+                duration_micros: duration_ns / 1000,
             };
             let _ = self.signal_tx.send(signal);
         }
     }
-
-    /// #### THIS IS THE CORRECTED LOGIC ####
+    
+    // Unchanged helper methods (consider_scaling_down, etc.)
     fn consider_scaling_down(&self) {
         let current_desired = self.desired_thread_count.load(Ordering::SeqCst);
         if current_desired <= self.min_threads { return; }
-
-        // UPDATED: Perform time checks using u64 arithmetic.
         let now = omega_time_ns();
         let last_scale_time = *self.last_scaling_time.lock().unwrap();
         let last_overload_time = *self.last_self_overload_time.lock().unwrap();
-
         if now.saturating_sub(last_scale_time) < self.scale_down_cooldown { return; }
         if now.saturating_sub(last_overload_time) < self.scale_down_cooldown { return; }
-
         let pressure = self.get_pressure_from_context();
         let pressure_level = self.get_pressure_level_from_pressure(pressure);
-        
         if pressure_level == PressureLevel::Empty || pressure_level == PressureLevel::Low {
             if self.desired_thread_count.compare_exchange(current_desired, current_desired - 1, Ordering::SeqCst, Ordering::Relaxed).is_ok() {
-                // Use the already captured `now` timestamp.
                 *self.last_scaling_time.lock().unwrap() = now;
             }
         }
@@ -287,9 +282,7 @@ impl<O: Send + 'static> WorkerContext<O> {
         if current_active <= self.min_threads || current_active <= self.desired_thread_count.load(Ordering::SeqCst) {
             return false;
         }
-
         if self.active_thread_count.compare_exchange(current_active, current_active - 1, Ordering::SeqCst, Ordering::Relaxed).is_ok() {
-            // UPDATED: Use omega_time_ns for timestamping.
             *self.last_scaling_time.lock().unwrap() = omega_time_ns();
             self.update_pressure_from_context();
             true
@@ -302,19 +295,14 @@ impl<O: Send + 'static> WorkerContext<O> {
         let q = self.task_queue.len() as f64;
         let c = self.active_thread_count.load(Ordering::Relaxed) as f64;
         let k = self.task_queue.capacity() as f64;
-        let pressure_float = if c > 0.0 && k > 0.0 {
-            (q/k) * 100.0
-        } else if q > 0.0 { 100.0 } else { 0.0 };
+        let pressure_float = if c > 0.0 && k > 0.0 { (q/k) * 100.0 } else if q > 0.0 { 100.0 } else { 0.0 };
         pressure_float.max(0.0).min(100.0) as usize
     }
 
     fn get_pressure_level_from_pressure(&self, pressure: usize) -> PressureLevel {
         match pressure {
-            0 => PressureLevel::Empty,
-            1..=25 => PressureLevel::Low,
-            26..=75 => PressureLevel::Normal,
-            76..=99 => PressureLevel::High,
-            _ => PressureLevel::Full,
+            0 => PressureLevel::Empty, 1..=25 => PressureLevel::Low,
+            26..=75 => PressureLevel::Normal, 76..=99 => PressureLevel::High, _ => PressureLevel::Full,
         }
     }
 
@@ -324,7 +312,7 @@ impl<O: Send + 'static> WorkerContext<O> {
     }
 }
 
-impl<Output: Send + 'static> Drop for OmegaNode<Output> {
+impl Drop for OmegaNode {
     fn drop(&mut self) {
         if !self.is_shutting_down.load(Ordering::Relaxed) {
             self.shutdown();
