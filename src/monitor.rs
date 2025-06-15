@@ -1,13 +1,13 @@
 // src/monitor.rs
 
 use crate::node::OmegaNode;
-use crate::SharedSubmitterStats;
 use omega::omega_timer::omega_time_ns; // UPDATED: Import omega_time_ns
 use std::io::{stdout, Write};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use crate::ultra_omega::SharedSubmitterStats;
 use std::thread;
 use std::time::Duration; // Kept for thread::sleep, which is correct
 
