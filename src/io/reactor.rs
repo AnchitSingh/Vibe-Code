@@ -1,6 +1,7 @@
 // src/io/reactor.rs
+use omega::omega_timer::{self, TimeoutManager, TimerConfig, ms_to_ticks};
 
-use crate::io::poller::{Poller, create_shutdown_eventfd};
+use crate::io::poller::Poller;
 use crate::io::{IoOp, IoOutput, Token};
 use crate::task::{TaskError, TaskId};
 use omega::OmegaHashSet;
@@ -8,21 +9,36 @@ use omega::ohs::OmegaBucket;
 
 use std::collections::VecDeque;
 use std::io::{self};
-use std::io::{Read, Write};
+use std::net::SocketAddr;
 use std::net::TcpListener;
-use std::net::{SocketAddr, TcpStream};
+use std::os::unix::io::FromRawFd;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::os::unix::io::{ FromRawFd}; 
-// --- Internal Reactor Structures (Definitions are the same) ---
+use std::time::Duration;
+use crate::io::poller::{create_shutdown_eventfd};
 
+
+use std::io::{Read, Write};
+use std::net::{TcpStream, UdpSocket};
+// --- Internal Reactor Structures (Definitions are the same) ---
+// --- Private Reactor Action for the Timer ---
+
+/// Defines the specific timeout actions the Reactor needs to handle.
+/// This will be the generic type `T` for our `CallbackTimeoutManager`.
+#[derive(Debug, Clone, Copy)]
+enum ReactorAction {
+    IoTimeout(Token),
+}
+
+// --- UPDATED ReactorCommand ---
 #[derive(Debug)]
 pub(crate) enum ReactorCommand {
     SubmitIoOp {
         op: IoOp,
         task_id: TaskId,
         result_tx: mpsc::Sender<Result<IoOutput, TaskError>>,
+        timeout: Option<Duration>,
     },
     Shutdown,
 }
@@ -71,7 +87,7 @@ impl Default for IoOperationContext {
 // --- GlobalReactor Implementation ---
 
 const EVENT_BUFFER_CAPACITY: usize = 1024;
-const REACTOR_LOOP_TIMEOUT_MS: i32 = 100;
+const REACTOR_LOOP_TIMEOUT_MS: i32 = 10;
 
 pub(crate) struct GlobalReactor {
     command_rx: mpsc::Receiver<ReactorCommand>,
@@ -80,6 +96,7 @@ pub(crate) struct GlobalReactor {
     next_token: AtomicU64,
     // The primary map is now Token -> Context.
     connections: OmegaHashSet<u64, IoOperationContext>,
+    timeout_manager: TimeoutManager<ReactorAction>
 }
 /// Helper to convert libc::sockaddr_in to std::net::SocketAddr.
 fn sockaddr_in_to_socket_addr(addr: &libc::sockaddr_in) -> SocketAddr {
@@ -94,6 +111,9 @@ impl GlobalReactor {
         let shutdown_event_fd = crate::io::poller::create_shutdown_eventfd()?;
         // Register the shutdown FD with epoll. We use token 0 for it.
         poller.add_fd_for_read(shutdown_event_fd, 0)?;
+        // NEW: Initialize the timer with default config (10ms ticks).
+        let timer_config = TimerConfig::default();
+        let timeout_manager = TimeoutManager::with_config(timer_config);
 
         Ok(Self {
             command_rx,
@@ -101,22 +121,39 @@ impl GlobalReactor {
             shutdown_event_fd,
             next_token: AtomicU64::new(1), // Token 0 is reserved for shutdown
             connections: OmegaHashSet::new_u64_map(1024),
+            timeout_manager,
         })
     }
 
-    /// The main event loop of the reactor. This is intended to run in its own dedicated thread.
+    /// Handles a scheduled IO timeout for a given connection token.
+    fn handle_io_timeout(&mut self, token: Token) {
+        if let Some(context) = self.connections.remove(&token) {
+            let _ = context.result_tx.send(Err(TaskError::TimedOut));
+            let _ = self.poller.remove_fd(context.fd);
+            unsafe { libc::close(context.fd); }
+        }
+    }
+
     pub fn run(mut self) {
         let mut events: [libc::epoll_event; EVENT_BUFFER_CAPACITY] =
             [libc::epoll_event { events: 0, u64: 0 }; EVENT_BUFFER_CAPACITY];
 
         'main_loop: loop {
+            // 1. Poll for ready actions. This returns a Vec and finishes its mutable borrow.
+            let ready_actions = self.timeout_manager.poll_ready();
+
+            // 2. Now, separately, iterate over the results and call methods on `self`.
+            // This is safe because the borrow on `self.timeout_manager` is over.
+            for action in ready_actions {
+                match action {
+                    ReactorAction::IoTimeout(token) => self.handle_io_timeout(token),
+                }
+            }
+
             let num_events = match self.poller.wait(&mut events, REACTOR_LOOP_TIMEOUT_MS) {
                 Ok(num) => num,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => {
-                    if e.kind() == io::ErrorKind::Interrupted {
-                        continue;
-                    }
-                    // In a real-world scenario, you might want more robust error logging.
                     eprintln!("[Reactor] epoll_wait error: {}", e);
                     continue;
                 }
@@ -127,22 +164,16 @@ impl GlobalReactor {
                 let token = event.u64;
 
                 if token == 0 {
-                    // Token 0 is our shutdown signal
                     break 'main_loop;
                 }
-
                 self.handle_event(token, event.events);
             }
 
-            // After processing OS events, process all pending commands from workers.
+            // CORRECTED: This call site is now valid.
             while let Ok(command) = self.command_rx.try_recv() {
                 match command {
-                    ReactorCommand::SubmitIoOp {
-                        op,
-                        task_id,
-                        result_tx,
-                    } => {
-                        self.handle_command(op, task_id, result_tx);
+                    ReactorCommand::SubmitIoOp { .. } => {
+                        self.handle_command(command);
                     }
                     ReactorCommand::Shutdown => {
                         break 'main_loop;
@@ -150,218 +181,206 @@ impl GlobalReactor {
                 }
             }
         }
-        // Gracefully shut down all connections.
         self.shutdown();
     }
 
-    /// Handles a new command from an OmegaNode worker.
-    fn handle_command(
-        &mut self,
-        op: IoOp,
-        task_id: TaskId,
-            result_tx: mpsc::Sender<Result<IoOutput, TaskError>>,
-        ) {
-            match op {
-                IoOp::UdpSendAndListenOnce { peer_addr, data_to_send } => {
-                    // 1. Create a non-blocking UDP socket.
-                    let socket_fd = unsafe {
-                        libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_NONBLOCK, 0)
-                    };
-    
-                    if socket_fd < 0 {
-                        let err = io::Error::last_os_error();
-                        let _ = result_tx.send(Err(TaskError::ExecutionFailed(Box::new(err))));
+    // --- THIS IS THE CORRECTED AND FULLY IMPLEMENTED `handle_command` METHOD ---
+    fn handle_command(&mut self, command: ReactorCommand) {
+        let ReactorCommand::SubmitIoOp { op, task_id, result_tx, timeout } = command else {
+            return;
+        };
+
+        let schedule_timeout = |timeout_manager: &mut TimeoutManager<ReactorAction>, token: Token| {
+            if let Some(timeout_duration) = timeout {
+                // CORRECTED: Convert u128 to u64 for ms_to_ticks
+                let delay_ticks = ms_to_ticks(timeout_duration.as_millis() as u64, 10);
+                timeout_manager.schedule(ReactorAction::IoTimeout(token), delay_ticks);
+            }
+        };
+
+        match op {
+            IoOp::UdpSendAndListenOnce {
+                peer_addr,
+                data_to_send,
+            } => {
+                let socket = match UdpSocket::bind("0.0.0.0:0") {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let _ = result_tx.send(Err(TaskError::ExecutionFailed(Box::new(e))));
                         return;
                     }
-                    
-                    // 2. Send the data to the specified peer.
-                    let peer_sockaddr = socket_addr_to_sockaddr_in(&peer_addr);
-                    let send_res = unsafe {
-                        libc::sendto(
-                            socket_fd,
-                            data_to_send.as_ptr() as *const libc::c_void,
-                            data_to_send.len(),
-                            0, // flags
-                            &peer_sockaddr as *const _ as *const libc::sockaddr,
-                            std::mem::size_of::<libc::sockaddr_in>() as u32,
-                        )
-                    };
-    
-                    if send_res < 0 {
-                        let err = io::Error::last_os_error();
-                        let _ = result_tx.send(Err(TaskError::ExecutionFailed(Box::new(err))));
-                        unsafe { libc::close(socket_fd); }
-                        return;
-                    }
-    
-                    // 3. Register for a read event to get the response.
-                    let token = self.next_token.fetch_add(1, Ordering::Relaxed);
-                    let context = IoOperationContext {
-                        task_id,
-                        token,
-                        fd: socket_fd,
-                        state: IoState::UdpWaitingForResponse,
-                        result_tx,
-                        read_buffer: Vec::new(),
-                        write_buffer: VecDeque::new(),
-                        peer_address: Some(peer_addr),
-                    };
-    
-                    if let Err(e) = self.poller.add_fd_for_read(socket_fd, token) {
-                        let _ = context.result_tx.send(Err(TaskError::ExecutionFailed(Box::new(e))));
-                        unsafe { libc::close(socket_fd); }
-                        return;
-                    }
-    
-                    self.connections.insert(token, context);
+                };
+                socket
+                    .set_nonblocking(true)
+                    .expect("Failed to set UDP socket to non-blocking");
+
+                if let Err(e) = socket.send_to(&data_to_send, peer_addr) {
+                    let _ = result_tx.send(Err(TaskError::ExecutionFailed(Box::new(e))));
+                    return;
                 }
-        
-                IoOp::TcpListen { addr } => {
-                    match TcpListener::bind(addr) {
-                        Ok(listener) => {
-                            listener
-                                .set_nonblocking(true)
-                                .expect("Failed to set listener to non-blocking");
-                            let fd = listener.as_raw_fd();
-                            let token = self.next_token.fetch_add(1, Ordering::Relaxed);
-                            
-                            // The Reactor now owns this FD. We must forget the listener
-                            // so Rust doesn't close the FD when the listener goes out of scope.
-                            std::mem::forget(listener);
-    
-                            let context = IoOperationContext {
-                                task_id,
-                                token,
-                                fd,
-                                state: IoState::TcpListening,
-                                result_tx, // This sender will be used to report accepted connections.
-                                read_buffer: Vec::new(),
-                                write_buffer: VecDeque::new(),
-                                peer_address: Some(addr),
-                            };
-    
-                            // Register the listener for READ events, which signify incoming connections.
-                            if let Err(e) = self.poller.add_fd_for_read(fd, token) {
-                                let _ = context
-                                    .result_tx
-                                    .send(Err(TaskError::ExecutionFailed(Box::new(e))));
-                                unsafe { libc::close(fd); }
-                                return;
-                            }
-    
-                            self.connections.insert(token, context);
-                        }
-                        Err(e) => {
-                            let _ = result_tx.send(Err(TaskError::ExecutionFailed(Box::new(e))));
-                        }
-                    }
-                }
-                IoOp::TcpConnect { peer_addr } => {
-                    let socket_fd = unsafe {
-                        libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_NONBLOCK, 0)
-                    };
-    
-                    if socket_fd < 0 {
-                        let err = io::Error::last_os_error();
-                        let _ = result_tx.send(Err(TaskError::ExecutionFailed(Box::new(err))));
-                        return;
-                    }
-    
-                    let addr = socket_addr_to_sockaddr_in(&peer_addr);
-    
+
+                let fd = socket.as_raw_fd();
+                let token = self.next_token.fetch_add(1, Ordering::Relaxed);
+                std::mem::forget(socket); // Reactor now owns the FD
+
+                let context = IoOperationContext {
+                    task_id,
+                    token,
+                    fd,
+                    state: IoState::UdpWaitingForResponse,
+                    result_tx,
+                    read_buffer: Vec::new(),
+                    write_buffer: VecDeque::new(),
+                    peer_address: Some(peer_addr),
+                };
+
+                if let Err(e) = self.poller.add_fd_for_read(fd, token) {
+                    let _ = context
+                        .result_tx
+                        .send(Err(TaskError::ExecutionFailed(Box::new(e))));
                     unsafe {
-                        libc::connect(
-                            socket_fd,
-                            &addr as *const _ as *const libc::sockaddr,
-                            std::mem::size_of::<libc::sockaddr_in>() as u32,
-                        )
-                    };
-    
-                    let connect_err = io::Error::last_os_error();
-                    if connect_err.raw_os_error() != Some(libc::EINPROGRESS) {
-                        let _ = result_tx.send(Err(TaskError::ExecutionFailed(Box::new(connect_err))));
-                        unsafe { libc::close(socket_fd); }
-                        return;
+                        libc::close(fd);
                     }
-    
-                    let token = self.next_token.fetch_add(1, Ordering::Relaxed);
-                    let context = IoOperationContext {
-                        task_id,
-                        token,
-                        fd: socket_fd,
-                        state: IoState::TcpConnecting,
-                        result_tx,
-                        read_buffer: Vec::new(),
-                        write_buffer: VecDeque::new(),
-                        peer_address: Some(peer_addr),
-                    };
-    
-                    if let Err(e) = self.poller.add_fd_for_write(socket_fd, token) {
-                        let _ = context
-                            .result_tx
-                            .send(Err(TaskError::ExecutionFailed(Box::new(e))));
-                        unsafe { libc::close(socket_fd); }
-                        return;
-                    }
-    
-                    self.connections.insert(token, context);
+                    return;
                 }
-                IoOp::TcpSend {
-                    connection_token,
-                    data,
-                } => {
-                    if let Some(context) = self.connections.get_mut(&connection_token) {
-                        // This is the "write" half of the operation. Store the result channel
-                        // for this specific send operation.
-                        context.result_tx = result_tx;
-                        context.state = IoState::TcpWriting;
-                        context.write_buffer.extend(data);
-                        
-                        // Arm the poller for a write event. The actual `write` syscall
-                        // will happen in `handle_event` when the socket is ready.
-                        let _ = self.poller.rearm_for_write(context.fd, context.token);
-                    } else {
-                        // The connection token was not found.
-                        let _ = result_tx.send(Err(TaskError::ExecutionFailed(Box::new(
-                            io::Error::new(io::ErrorKind::NotFound, "Connection token not found for TcpSend"),
-                        ))));
+
+                self.connections.insert(token, context);
+                schedule_timeout(&mut self.timeout_manager, token);
+            }
+            IoOp::TcpListen { addr } => {
+                match TcpListener::bind(addr) {
+                    Ok(listener) => {
+                        listener
+                            .set_nonblocking(true)
+                            .expect("Failed to set listener to non-blocking");
+                        let fd = listener.as_raw_fd();
+                        let token = self.next_token.fetch_add(1, Ordering::Relaxed);
+                        std::mem::forget(listener);
+
+                        let context = IoOperationContext {
+                            task_id,
+                            token,
+                            fd,
+                            state: IoState::TcpListening,
+                            result_tx,
+                            read_buffer: Vec::new(),
+                            write_buffer: VecDeque::new(),
+                            peer_address: Some(addr),
+                        };
+
+                        if let Err(e) = self.poller.add_fd_for_read(fd, token) {
+                            let _ = context
+                                .result_tx
+                                .send(Err(TaskError::ExecutionFailed(Box::new(e))));
+                            unsafe {
+                                libc::close(fd);
+                            }
+                            return;
+                        }
+
+                        self.connections.insert(token, context);
+                        // Listeners typically don't time out, so we don't schedule one.
                     }
-                }
-                IoOp::TcpReceive {
-                    connection_token,
-                    .. // max_bytes is used in handle_event
-                } => {
-                    if let Some(context) = self.connections.get_mut(&connection_token) {
-                        // This is the "read" half. Store the result channel for this receive.
-                        context.result_tx = result_tx;
-                        context.state = IoState::TcpReading;
-                        
-                        // Arm the poller for a read event. The actual `read` syscall
-                        // will happen in `handle_event`.
-                        let _ = self.poller.rearm_for_read(context.fd, context.token);
-                    } else {
-                        let _ = result_tx.send(Err(TaskError::ExecutionFailed(Box::new(
-                            io::Error::new(io::ErrorKind::NotFound, "Connection token not found for TcpReceive"),
-                        ))));
-                    }
-                }
-                IoOp::CloseConnection { connection_token } => {
-                    if let Some(context) = self.connections.remove(&connection_token) {
-                        let _ = self.poller.remove_fd(context.fd);
-                        unsafe { libc::close(context.fd); }
-                        // Use the result_tx from this specific CloseConnection call
-                        let _ = result_tx.send(Ok(IoOutput::ConnectionClosed));
-                    } else {
-                        // The connection was already closed or never existed.
-                        let _ = result_tx.send(Err(TaskError::ExecutionFailed(Box::new(
-                            io::Error::new(io::ErrorKind::NotFound, "Connection token not found for CloseConnection"),
-                        ))));
+                    Err(e) => {
+                        let _ = result_tx.send(Err(TaskError::ExecutionFailed(Box::new(e))));
                     }
                 }
             }
+            IoOp::TcpConnect { peer_addr } => {
+                let socket_fd = unsafe {
+                    libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_NONBLOCK, 0)
+                };
+
+                if socket_fd < 0 {
+                    let _ = result_tx.send(Err(TaskError::ExecutionFailed(Box::new(io::Error::last_os_error()))));
+                    return;
+                }
+
+                let addr = socket_addr_to_sockaddr_in(&peer_addr);
+
+                // Initiate non-blocking connect
+                // CORRECT
+                unsafe {
+                    libc::connect(socket_fd, &addr as *const _ as *const libc::sockaddr, std::mem::size_of::<libc::sockaddr_in>() as u32);
+                };
+                
+                let connect_err = io::Error::last_os_error();
+
+                // The only "acceptable" error here is EINPROGRESS.
+                if connect_err.raw_os_error() != Some(libc::EINPROGRESS) {
+                    let _ = result_tx.send(Err(TaskError::ExecutionFailed(Box::new(connect_err))));
+                    unsafe { libc::close(socket_fd); }
+                    return;
+                }
+                
+                // If we get here, the connection is in progress.
+                let token = self.next_token.fetch_add(1, Ordering::Relaxed);
+                let context = IoOperationContext {
+                    task_id, token, fd: socket_fd, state: IoState::TcpConnecting, result_tx,
+                    read_buffer: Vec::new(), write_buffer: VecDeque::new(), peer_address: Some(peer_addr),
+                };
+                
+                // Register for write-readiness, which signals connect completion.
+                if let Err(e) = self.poller.add_fd_for_write(socket_fd, token) {
+                   let _ = context.result_tx.send(Err(TaskError::ExecutionFailed(Box::new(e))));
+                   unsafe { libc::close(socket_fd); }
+                   return;
+                }
+
+                self.connections.insert(token, context);
+                schedule_timeout(&mut self.timeout_manager, token);
+            }
+            IoOp::TcpSend {
+                connection_token,
+                data,
+            } => {
+                if let Some(context) = self.connections.get_mut(&connection_token) {
+                    context.result_tx = result_tx;
+                    context.state = IoState::TcpWriting;
+                    context.write_buffer.extend(data);
+                    let _ = self.poller.rearm_for_write(context.fd, context.token);
+                    schedule_timeout(&mut self.timeout_manager, connection_token);
+                } else {
+                    let _ =
+                        result_tx.send(Err(TaskError::ExecutionFailed(Box::new(io::Error::new(
+                            io::ErrorKind::NotFound,
+                            "Connection token not found for TcpSend",
+                        )))));
+                }
+            }
+            IoOp::TcpReceive {
+                connection_token, ..
+            } => {
+                if let Some(context) = self.connections.get_mut(&connection_token) {
+                    context.result_tx = result_tx;
+                    context.state = IoState::TcpReading;
+                    let _ = self.poller.rearm_for_read(context.fd, context.token);
+                    schedule_timeout(&mut self.timeout_manager, connection_token);
+                } else {
+                    let _ =
+                        result_tx.send(Err(TaskError::ExecutionFailed(Box::new(io::Error::new(
+                            io::ErrorKind::NotFound,
+                            "Connection token not found for TcpReceive",
+                        )))));
+                }
+            }
+            IoOp::CloseConnection { connection_token } => {
+                if let Some(context) = self.connections.remove(&connection_token) {
+                    let _ = self.poller.remove_fd(context.fd);
+                    unsafe {
+                        libc::close(context.fd);
+                    }
+                    let _ = result_tx.send(Ok(IoOutput::ConnectionClosed));
+                } else {
+                    let _ =
+                        result_tx.send(Err(TaskError::ExecutionFailed(Box::new(io::Error::new(
+                            io::ErrorKind::NotFound,
+                            "Connection token not found for CloseConnection",
+                        )))));
+                }
+            }
         }
-        
-    // THIS IS THE CORRECTED `handle_event` METHOD
+    }
 
     /// Handles an I/O event from the OS for a specific connection token.
     fn handle_event(&mut self, token: u64, _event_flags: u32) {
@@ -380,7 +399,7 @@ impl GlobalReactor {
                             std::mem::forget(stream); // Reactor now owns the FD.
 
                             let new_token = self.next_token.fetch_add(1, Ordering::Relaxed);
-                            
+
                             let (new_tx, _) = mpsc::channel();
                             let new_context = IoOperationContext {
                                 task_id: TaskId::new(),
@@ -392,9 +411,9 @@ impl GlobalReactor {
                                 write_buffer: VecDeque::new(),
                                 peer_address: Some(peer_addr),
                             };
-                            
+
                             new_connection_to_add = Some((new_token, new_context));
-                            
+
                             // Use the LISTENER's result channel to report the new connection
                             let _ = context.result_tx.send(Ok(IoOutput::NewConnectionAccepted {
                                 connection_token: new_token,
@@ -402,10 +421,10 @@ impl GlobalReactor {
                                 listener_token: token,
                             }));
                         }
-                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}, // Spurious wakeup, ignore.
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {} // Spurious wakeup, ignore.
                         Err(e) => eprintln!("[Reactor] Accept error on listener {}: {}", token, e),
                     }
-                    
+
                     let _ = self.poller.rearm_for_read(context.fd, token);
                     std::mem::forget(listener);
                 }
@@ -447,23 +466,34 @@ impl GlobalReactor {
                 // Event for a readable TCP socket.
                 IoState::TcpReading => {
                     let mut read_buf = vec![0; 2048]; // Use a temporary buffer for the read.
-                    match unsafe { libc::read(context.fd, read_buf.as_mut_ptr() as *mut _, read_buf.len()) } {
-                        -1 => { // Error
+                    match unsafe {
+                        libc::read(context.fd, read_buf.as_mut_ptr() as *mut _, read_buf.len())
+                    } {
+                        -1 => {
+                            // Error
                             let err = io::Error::last_os_error();
                             if err.kind() != io::ErrorKind::WouldBlock {
-                                let _ = context.result_tx.send(Err(TaskError::ExecutionFailed(Box::new(err))));
+                                let _ = context
+                                    .result_tx
+                                    .send(Err(TaskError::ExecutionFailed(Box::new(err))));
                                 context_is_finished = true;
                             } else {
                                 let _ = self.poller.rearm_for_read(context.fd, context.token);
                             }
                         }
-                        0 => { // Connection closed by peer
-                            let _ = context.result_tx.send(Ok(IoOutput::TcpDataReceived { data: vec![] }));
+                        0 => {
+                            // Connection closed by peer
+                            let _ = context
+                                .result_tx
+                                .send(Ok(IoOutput::TcpDataReceived { data: vec![] }));
                             context_is_finished = true;
                         }
-                        n => { // Data received
+                        n => {
+                            // Data received
                             read_buf.truncate(n as usize);
-                            let _ = context.result_tx.send(Ok(IoOutput::TcpDataReceived { data: read_buf }));
+                            let _ = context
+                                .result_tx
+                                .send(Ok(IoOutput::TcpDataReceived { data: read_buf }));
                             context.state = IoState::TcpIdle;
                         }
                     }
@@ -471,23 +501,36 @@ impl GlobalReactor {
                 // Event for a writable TCP socket.
                 IoState::TcpWriting => {
                     let data_to_write = context.write_buffer.make_contiguous();
-                    match unsafe { libc::write(context.fd, data_to_write.as_ptr() as *const _, data_to_write.len()) } {
-                        -1 => { // Error
+                    match unsafe {
+                        libc::write(
+                            context.fd,
+                            data_to_write.as_ptr() as *const _,
+                            data_to_write.len(),
+                        )
+                    } {
+                        -1 => {
+                            // Error
                             let err = io::Error::last_os_error();
                             if err.kind() != io::ErrorKind::WouldBlock {
-                                let _ = context.result_tx.send(Err(TaskError::ExecutionFailed(Box::new(err))));
+                                let _ = context
+                                    .result_tx
+                                    .send(Err(TaskError::ExecutionFailed(Box::new(err))));
                                 context_is_finished = true;
                             } else {
                                 let _ = self.poller.rearm_for_write(context.fd, context.token);
                             }
                         }
-                        n if n > 0 => { // Partially or fully wrote data
+                        n if n > 0 => {
+                            // Partially or fully wrote data
                             let bytes_written = n as usize;
-                            let total_sent_previously = data_to_write.len() - context.write_buffer.len() + bytes_written;
+                            let total_sent_previously =
+                                data_to_write.len() - context.write_buffer.len() + bytes_written;
                             context.write_buffer.drain(..bytes_written);
                             if context.write_buffer.is_empty() {
                                 context.state = IoState::TcpIdle;
-                                let _ = context.result_tx.send(Ok(IoOutput::TcpDataSent { bytes_sent: total_sent_previously }));
+                                let _ = context.result_tx.send(Ok(IoOutput::TcpDataSent {
+                                    bytes_sent: total_sent_previously,
+                                }));
                             } else {
                                 let _ = self.poller.rearm_for_write(context.fd, context.token);
                             }
@@ -499,20 +542,25 @@ impl GlobalReactor {
                 IoState::UdpWaitingForResponse => {
                     let mut read_buf = vec![0; 4096];
                     let mut peer_addr_storage: libc::sockaddr_in = unsafe { std::mem::zeroed() };
-                    let mut peer_addr_len = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+                    let mut peer_addr_len =
+                        std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
 
-                    match unsafe { libc::recvfrom(
-                        context.fd,
-                        read_buf.as_mut_ptr() as *mut _,
-                        read_buf.len(),
-                        0,
-                        &mut peer_addr_storage as *mut _ as *mut libc::sockaddr,
-                        &mut peer_addr_len,
-                    ) } {
+                    match unsafe {
+                        libc::recvfrom(
+                            context.fd,
+                            read_buf.as_mut_ptr() as *mut _,
+                            read_buf.len(),
+                            0,
+                            &mut peer_addr_storage as *mut _ as *mut libc::sockaddr,
+                            &mut peer_addr_len,
+                        )
+                    } {
                         -1 => {
                             let err = io::Error::last_os_error();
                             if err.kind() != io::ErrorKind::WouldBlock {
-                                let _ = context.result_tx.send(Err(TaskError::ExecutionFailed(Box::new(err))));
+                                let _ = context
+                                    .result_tx
+                                    .send(Err(TaskError::ExecutionFailed(Box::new(err))));
                                 context_is_finished = true;
                             }
                         }
@@ -539,17 +587,23 @@ impl GlobalReactor {
 
         if let Some((token_to_add, context_to_add)) = new_connection_to_add {
             if let Err(e) = self.poller.add_fd_for_read(context_to_add.fd, token_to_add) {
-                 let _ = context_to_add.result_tx.send(Err(TaskError::ExecutionFailed(Box::new(e))));
-                 unsafe { libc::close(context_to_add.fd); }
+                let _ = context_to_add
+                    .result_tx
+                    .send(Err(TaskError::ExecutionFailed(Box::new(e))));
+                unsafe {
+                    libc::close(context_to_add.fd);
+                }
             } else {
                 self.connections.insert(token_to_add, context_to_add);
             }
         }
-        
+
         if context_is_finished {
             if let Some(context) = self.connections.remove(&token) {
                 let _ = self.poller.remove_fd(context.fd);
-                unsafe { libc::close(context.fd); }
+                unsafe {
+                    libc::close(context.fd);
+                }
             }
         }
     }

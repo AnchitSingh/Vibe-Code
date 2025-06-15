@@ -5,7 +5,7 @@ use crate::signals::{NodeId, SystemSignal};
 // TaskExecutionOutcome is now used by the worker
 use crate::task::{Task, TaskExecutionOutcome};
 use crate::types::{LocalStats, NodeError};
-use omega::omega_timer::omega_time_ns;
+use omega::omega_timer::elapsed_ns;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -68,8 +68,8 @@ impl OmegaNode {
             local_stats: Arc::new(LocalStats::new()),
             is_shutting_down: Arc::new(AtomicBool::new(false)),
             desired_thread_count: Arc::new(AtomicUsize::new(min_threads)),
-            last_scaling_time: Arc::new(Mutex::new(omega_time_ns())),
-            last_self_overload_time: Arc::new(Mutex::new(omega_time_ns().saturating_sub(3600 * NANOS_PER_SEC))),
+            last_scaling_time: Arc::new(Mutex::new(elapsed_ns())),
+            last_self_overload_time: Arc::new(Mutex::new(elapsed_ns().saturating_sub(3600 * NANOS_PER_SEC))),
             scale_down_cooldown: scale_down_cooldown_override.unwrap_or(5 * NANOS_PER_SEC),
             pressure: pressure_arc,
         };
@@ -113,7 +113,7 @@ impl OmegaNode {
         self.active_thread_count.fetch_add(1, Ordering::SeqCst);
         self.desired_thread_count.store(self.active_threads(), Ordering::SeqCst);
 
-        let now = omega_time_ns();
+        let now = elapsed_ns();
         *self.last_scaling_time.lock().unwrap() = now;
         if triggered_by_overload {
             *self.last_self_overload_time.lock().unwrap() = now;
@@ -143,7 +143,7 @@ impl OmegaNode {
                 Ok(())
             }
             Err(QueueError::Full) => {
-                *self.last_self_overload_time.lock().unwrap() = omega_time_ns();
+                *self.last_self_overload_time.lock().unwrap() = elapsed_ns();
                 self.spawn_worker_thread(true);
                 Err(NodeError::QueueFull)
             }
@@ -234,13 +234,13 @@ impl WorkerContext {
 
     fn process_task(&self, task: Task) {
         let task_id = task.id;
-        let start_time_ns = omega_time_ns();
+        let start_time_ns = elapsed_ns();
 
         // The task's run method executes the work, sends the result,
         // and returns the internal outcome.
         let outcome = task.run();
 
-        let duration_ns = omega_time_ns().saturating_sub(start_time_ns);
+        let duration_ns = elapsed_ns().saturating_sub(start_time_ns);
 
         // For local stats, we can still decide how to count success.
         // Let's count 'Success' as success, and all others as failure.
@@ -263,7 +263,7 @@ impl WorkerContext {
     fn consider_scaling_down(&self) {
         let current_desired = self.desired_thread_count.load(Ordering::SeqCst);
         if current_desired <= self.min_threads { return; }
-        let now = omega_time_ns();
+        let now = elapsed_ns();
         let last_scale_time = *self.last_scaling_time.lock().unwrap();
         let last_overload_time = *self.last_self_overload_time.lock().unwrap();
         if now.saturating_sub(last_scale_time) < self.scale_down_cooldown { return; }
@@ -283,7 +283,7 @@ impl WorkerContext {
             return false;
         }
         if self.active_thread_count.compare_exchange(current_active, current_active - 1, Ordering::SeqCst, Ordering::Relaxed).is_ok() {
-            *self.last_scaling_time.lock().unwrap() = omega_time_ns();
+            *self.last_scaling_time.lock().unwrap() = elapsed_ns();
             self.update_pressure_from_context();
             true
         } else {

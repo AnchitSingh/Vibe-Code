@@ -52,6 +52,7 @@ pub enum TaskError {
     Panicked(String),
     /// The task's logic failed gracefully and returned an error.
     ExecutionFailed(Box<dyn std::error::Error + Send + Sync + 'static>),
+    TimedOut, // ADDED THIS VARIANT
 }
 
 impl fmt::Display for TaskError {
@@ -59,6 +60,7 @@ impl fmt::Display for TaskError {
         match self {
             TaskError::Panicked(msg) => write!(f, "Task panicked: {}", msg),
             TaskError::ExecutionFailed(err) => write!(f, "Task execution failed: {}", err),
+            TaskError::TimedOut => write!(f, "Operation timed out"),
         }
     }
 }
@@ -199,11 +201,13 @@ impl Task {
                 }
             };
 
-            // Determine the internal outcome *before* attempting to send.
+            // CORRECTED: The match now correctly handles all variants of TaskError.
             let outcome_before_send = match &task_result {
                 Ok(_) => TaskExecutionOutcome::Success,
                 Err(TaskError::Panicked(_)) => TaskExecutionOutcome::Panicked,
                 Err(TaskError::ExecutionFailed(_)) => TaskExecutionOutcome::LogicError,
+                // Add the new case for completeness, even if it's rare for CPU tasks.
+                Err(TaskError::TimedOut) => TaskExecutionOutcome::LogicError,
             };
 
             // 2. Send the result back to the client via the channel.

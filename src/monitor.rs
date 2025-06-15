@@ -1,7 +1,7 @@
 // src/monitor.rs
 
 use crate::node::OmegaNode;
-use omega::omega_timer::omega_time_ns; // UPDATED: Import omega_time_ns
+use omega::omega_timer::elapsed_ns; // UPDATED: Import omega_time_ns
 use std::io::{stdout, Write};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -73,7 +73,7 @@ fn print_dashboard(
 
     // --- Header ---
     // UPDATED: Calculate elapsed time using omega_time_ns
-    let elapsed_ns = omega_time_ns().saturating_sub(start_time_ns);
+    let elapsed_ns = elapsed_ns().saturating_sub(start_time_ns);
     let elapsed_ms_total = elapsed_ns / 1_000_000;
     let elapsed_secs_total = elapsed_ms_total / 1000;
 
