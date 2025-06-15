@@ -115,7 +115,7 @@ fn print_dashboard(
         let desired_t = node.desired_threads();
 
         // Determine node type based on its configuration
-        let node_type = if node.max_threads > 3 { "SUPER" } else { "NORM" };
+        let node_type = if node.max_threads > 4 { "SUPER" } else { "NORM" };
 
         let bar = render_pressure_bar(pressure, max_p);
         let queue_str = format!("{}/{}", q_len, q_cap);
