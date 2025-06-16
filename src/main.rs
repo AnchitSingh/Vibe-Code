@@ -63,6 +63,8 @@ fn run_io_tests() {
 
     run_mixed_io_cpu_drone_swarm_test();
 
+    run_cpu_stress_test();
+
 }
 
 // --- I/O Test Implementation: Successful Echo ---
