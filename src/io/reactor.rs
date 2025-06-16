@@ -221,8 +221,7 @@ impl GlobalReactor {
             let num_events = match self.poller.wait(&mut events, REACTOR_LOOP_TIMEOUT_MS) {
                 Ok(num) => num,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue, // Retry on EINTR
-                Err(e) => {
-                    eprintln!("[Reactor] epoll_wait error: {}", e);
+                Err(_e) => {
                     continue; // Log error and continue loop
                 }
             };
@@ -338,7 +337,7 @@ impl GlobalReactor {
                             .set_nonblocking(true)
                             .expect("Failed to set listener to non-blocking");
                         let fd = listener.as_raw_fd();
-                        let actual_addr = listener.local_addr().unwrap(); // Get the actual bound address
+                        let actual_addr = listener.local_addr().expect("Failed to get local_addr from newly bound listener"); // Get the actual bound address
                         let token = self.next_token.fetch_add(1, Ordering::Relaxed);
                         std::mem::forget(listener); // Prevent listener from being closed
 
@@ -619,7 +618,7 @@ impl GlobalReactor {
                             .result_tx
                             .send(Ok(IoOutput::TcpConnectionEstablished {
                                 connection_token: token,
-                                peer_addr: context.peer_address.unwrap(),
+                                peer_addr: context.peer_address.expect("Connecting context must have a peer_address"),
                             }));
 
                         context.state = IoState::TcpIdle; // Connection is now idle

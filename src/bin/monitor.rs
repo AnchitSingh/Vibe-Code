@@ -4,8 +4,10 @@
 //! real-time statistics about the `UltraOmegaSystem`, including task submission
 //! progress and the state of individual `OmegaNode`s.
 
-use crate::node::OmegaNode;
-use crate::ultra_omega::SharedSubmitterStats;
+use ultra_omega::{
+    node::OmegaNode,
+    ultra_omega::SharedSubmitterStats
+};
 use omega::omega_timer::elapsed_ns;
 use std::io::{Write, stdout};
 use std::sync::{
@@ -65,7 +67,7 @@ impl Monitor {
                     }
                     // Final clear screen after the monitor thread finishes.
                     print!("\x1B[2J\x1B[H"); // ANSI codes: Clear screen and move cursor to top-left
-                    stdout().flush().unwrap();
+                    stdout().flush().expect("Failed to flush stdout for monitor");;
                 })
                 .expect("Failed to spawn monitor thread")
         };
@@ -214,4 +216,8 @@ fn render_pressure_bar(current: usize, max: usize) -> String {
     let reset = "\x1B[0m"; // ANSI reset code
 
     format!("[{}{}{}] {:>3.0}%", color, bar, reset, ratio * 100.0)
+}
+
+fn main(){
+    
 }

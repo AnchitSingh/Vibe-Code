@@ -23,7 +23,7 @@ use std::io as std_io;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{
     Arc,
-    atomic::{AtomicUsize, Ordering},
+    atomic::AtomicUsize,
 };
 use std::thread::{Builder, JoinHandle};
 use std::time::Duration;

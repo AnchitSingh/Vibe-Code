@@ -1,19 +1,16 @@
 // src/main.rs
 
-mod monitor;
-mod node;
-mod queue;
-mod signals;
-// mod system_pulse;
-mod task;
-mod types;
-// ADD the io module declaration
-mod io;
-mod ultra_omega;
+mod monitor; 
 
-use task::{Priority, TaskError, TaskHandle};
+// Use the public API of the `ultra_omega` library.
+use ultra_omega::{
+    io::{IoOp, IoOutput},
+    task::{Priority, TaskError, TaskHandle},
+    UltraOmegaSystem,
+    ultra_omega::SharedSubmitterStats
+};
 
-use crate::ultra_omega::{SharedSubmitterStats, UltraOmegaSystem};
+
 use omega::borrg::OmegaRng;
 use omega::omega_timer::{elapsed_ns, timer_init};
 use sha2::{Digest, Sha256};
@@ -21,7 +18,6 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration; // NEW: Import for hashing
 
-const USE_HETEROGENEOUS_NODES: bool = true; // Use Super/Normal node configuration
 const NUM_NODES_CONF: usize = 8;
 const NUM_SUPER_NODES_CONF: usize = 2; // The first 2 nodes will be "super"
 const NUM_SUBMITTER_THREADS_CONF: usize = 16;
@@ -32,8 +28,6 @@ const HASHING_ITERATIONS_SUPER_NODE: u32 = 150_000; // More work for expected su
 const HASHING_ITERATIONS_NORMAL_NODE: u32 = 50_000; // Less work for normal nodes
 
 // src/main.rs
-
-use io::{IoOp, IoOutput};
 
 use std::net::SocketAddr;
 
@@ -296,7 +290,6 @@ fn test_client_receive_timeout_corrected() {
 fn run_cpu_stress_test() {
     use monitor::Monitor;
     use sha2::{Digest, Sha256};
-    use std::io::{Write, stdout};
 
     let omega_system = Arc::new(
         UltraOmegaSystem::builder()
@@ -354,7 +347,7 @@ fn run_cpu_stress_test() {
 
                 match system_clone.submit_cpu_task(
                     Priority::Normal,
-                    iterations as u32,
+                    iterations,
                     task_work,
                     &mut task_rng,
                 ) {
@@ -423,7 +416,7 @@ fn run_cpu_stress_test() {
 
 // Add this function to your main.rs file
 
-use serde_json::{Value, json};
+use serde_json::json;
 use std::collections::HashMap;
 
 // Drone swarm simulation constants
@@ -661,7 +654,7 @@ fn run_telemetry_exchange(
 
             for i in 0..TELEMETRY_PROCESSING_ITERATIONS {
                 hasher.update(&processed_data);
-                hasher.update(&i.to_le_bytes());
+                hasher.update(i.to_le_bytes());
                 processed_data = hasher.finalize_reset().to_vec();
             }
 
@@ -719,7 +712,7 @@ fn run_mission_data_processing(
                 for i in 0..(MISSION_DATA_PROCESSING_ITERATIONS / 3) {
                     hasher.update(&processed);
                     hasher.update("PREPROCESS".as_bytes());
-                    hasher.update(&i.to_le_bytes());
+                    hasher.update(i.to_le_bytes());
                     processed = hasher.finalize_reset().to_vec();
                 }
 
@@ -749,7 +742,7 @@ fn run_mission_data_processing(
                 for i in 0..MISSION_DATA_PROCESSING_ITERATIONS {
                     hasher.update(&processed);
                     hasher.update("MAIN_PROCESS".as_bytes());
-                    hasher.update(&i.to_le_bytes());
+                    hasher.update(i.to_le_bytes());
                     processed = hasher.finalize_reset().to_vec();
                 }
 
@@ -865,7 +858,7 @@ fn run_emergency_alert_chain(
                 for i in 0..(TELEMETRY_PROCESSING_ITERATIONS * 2) {
                     hasher.update(&processed);
                     hasher.update("EMERGENCY".as_bytes());
-                    hasher.update(&i.to_le_bytes());
+                    hasher.update(i.to_le_bytes());
                     processed = hasher.finalize_reset().to_vec();
                 }
 

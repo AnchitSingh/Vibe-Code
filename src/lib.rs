@@ -18,7 +18,6 @@
 //!
 //! # Modules
 //!
-//! - `monitor`: (Potentially for system monitoring and metrics)
 //! - `node`: Defines the `OmegaNode` and its worker threads.
 //! - `queue`: Implements the `OmegaQueue` for task buffering.
 //! - `signals`: Defines system-wide communication signals and unique identifiers.
@@ -37,7 +36,6 @@ use std::sync::{
 
 // --- Core Modules ---
 pub mod io;
-pub mod monitor;
 pub mod node;
 pub mod queue;
 pub mod signals;
@@ -49,7 +47,7 @@ pub mod ultra_omega; // I/O Subsystem Module
 // This section defines the clean public API for external crates (e.g., a P2P library) to use.
 
 /// Re-exports the main system entry point for creating and managing the CPU Circulatory System.
-pub use ultra_omega::UltraOmegaSystem;
+pub use ultra_omega::{UltraOmegaBuilder,UltraOmegaSystem};
 
 /// Re-exports core types for interacting with tasks:
 /// - `TaskHandle`: For awaiting task results.

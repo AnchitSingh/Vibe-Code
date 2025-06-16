@@ -201,9 +201,9 @@ impl OmegaNode {
             .store(self.active_threads(), Ordering::SeqCst);
 
         let now = elapsed_ns();
-        *self.last_scaling_time.lock().unwrap() = now;
+        *self.last_scaling_time.lock().expect("Mutex should not be poisoned") = now;
         if triggered_by_overload {
-            *self.last_self_overload_time.lock().unwrap() = now;
+            *self.last_self_overload_time.lock().expect("Mutex should not be poisoned") = now;
         }
 
         self.update_pressure(); // Update pressure after spawning a new thread
@@ -218,7 +218,7 @@ impl OmegaNode {
             .spawn(move || worker_context.run_loop())
             .expect("Failed to spawn worker thread");
 
-        self.worker_threads_handles.lock().unwrap().push(handle);
+        self.worker_threads_handles.lock().expect("Mutex should not be poisoned").push(handle);
     }
 
     /// Submits a `Task` to this `OmegaNode`'s task queue.
@@ -253,7 +253,7 @@ impl OmegaNode {
             }
             Err(QueueError::Full) => {
                 // If queue is full, record overload time and try to spawn a worker.
-                *self.last_self_overload_time.lock().unwrap() = elapsed_ns();
+                *self.last_self_overload_time.lock().expect("Mutex should not be poisoned") = elapsed_ns();
                 self.spawn_worker_thread(true);
                 Err(NodeError::QueueFull)
             }
@@ -274,7 +274,7 @@ impl OmegaNode {
         {
             self.task_queue.close(); // Close the queue to prevent new tasks
             self.desired_thread_count.store(0, Ordering::SeqCst); // Signal workers to exit
-            let mut workers = self.worker_threads_handles.lock().unwrap();
+            let mut workers = self.worker_threads_handles.lock().expect("Mutex should not be poisoned");
             for handle in workers.drain(..) {
                 let _ = handle.join(); // Wait for each worker thread to finish
             }
@@ -433,8 +433,8 @@ impl WorkerContext {
         }
 
         let now = elapsed_ns();
-        let last_scale_time = *self.last_scaling_time.lock().unwrap();
-        let last_overload_time = *self.last_self_overload_time.lock().unwrap();
+        let last_scale_time = *self.last_scaling_time.lock().expect("Mutex should not be poisoned");
+        let last_overload_time = *self.last_self_overload_time.lock().expect("Mutex should not be poisoned");
 
         // Enforce cooldown periods for scaling down.
         if now.saturating_sub(last_scale_time) < self.scale_down_cooldown {
@@ -459,7 +459,7 @@ impl WorkerContext {
                 )
                 .is_ok()
         {
-            *self.last_scaling_time.lock().unwrap() = now; // Update last scaling time
+            *self.last_scaling_time.lock().expect("Mutex should not be poisoned") = now; // Update last scaling time
         }
     }
 
@@ -491,7 +491,7 @@ impl WorkerContext {
             )
             .is_ok()
         {
-            *self.last_scaling_time.lock().unwrap() = elapsed_ns(); // Update last scaling time
+            *self.last_scaling_time.lock().expect("Mutex should not be poisoned") = elapsed_ns(); // Update last scaling time
             self.update_pressure_from_context(); // Update pressure after retirement
             true
         } else {
