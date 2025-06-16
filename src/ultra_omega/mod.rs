@@ -22,8 +22,8 @@ use omega::borrg::{BiasStrategy, OmegaRng};
 use std::io as std_io;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 use std::thread::{Builder, JoinHandle};
 use std::time::Duration;
@@ -118,8 +118,8 @@ impl UltraOmegaSystem {
     pub(crate) fn new_internal(nodes: Vec<Arc<OmegaNode>>) -> Self {
         let (reactor_cmd_tx, reactor_cmd_rx) = mpsc::channel();
 
-        let reactor = GlobalReactor::new(reactor_cmd_rx)
-            .expect("Failed to initialize Global Reactor");
+        let reactor =
+            GlobalReactor::new(reactor_cmd_rx).expect("Failed to initialize Global Reactor");
 
         let reactor_thread = Builder::new()
             .name("global-io-reactor".to_string())
@@ -284,11 +284,7 @@ impl UltraOmegaSystem {
 
                 for _ in 0..k {
                     let next = if _try_num > 2 {
-                        rng.range_biased(
-                            prev.wrapping_add(1),
-                            boundary,
-                            BiasStrategy::Power(0.05),
-                        )
+                        rng.range_biased(prev.wrapping_add(1), boundary, BiasStrategy::Power(0.05))
                     } else {
                         // This block will determine the 'next' value using a sequence of biased attempts.
                         let mut temp_next = rng.range_biased(

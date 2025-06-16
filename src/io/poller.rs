@@ -128,7 +128,7 @@ impl Poller {
     ///
     /// * `events` - A mutable slice to store the `epoll_event`s.
     /// * `timeout_ms` - The maximum time to wait for events, in milliseconds.
-    ///                  A value of -1 means infinite timeout.
+    ///   A value of -1 means infinite timeout.
     ///
     /// # Returns
     ///
@@ -136,7 +136,12 @@ impl Poller {
     /// Returns `Ok(0)` if the wait was interrupted by a signal (`EINTR`).
     pub fn wait(&self, events: &mut [libc::epoll_event], timeout_ms: i32) -> io::Result<usize> {
         let num_events = unsafe {
-            libc::epoll_wait(self.epoll_fd, events.as_mut_ptr(), events.len() as i32, timeout_ms)
+            libc::epoll_wait(
+                self.epoll_fd,
+                events.as_mut_ptr(),
+                events.len() as i32,
+                timeout_ms,
+            )
         };
 
         if num_events < 0 {

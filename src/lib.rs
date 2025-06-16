@@ -31,19 +31,19 @@
 #![allow(unused_imports)] // Temporarily allow unused imports during development
 
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
 // --- Core Modules ---
+pub mod io;
 pub mod monitor;
 pub mod node;
 pub mod queue;
 pub mod signals;
 pub mod task;
 pub mod types;
-pub mod ultra_omega;
-pub mod io; // I/O Subsystem Module
+pub mod ultra_omega; // I/O Subsystem Module
 
 // --- Public API Re-exports ---
 // This section defines the clean public API for external crates (e.g., a P2P library) to use.

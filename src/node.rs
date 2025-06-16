@@ -10,8 +10,9 @@ use crate::task::{Task, TaskExecutionOutcome};
 use crate::types::{LocalStats, NodeError};
 use omega::omega_timer::elapsed_ns;
 use std::sync::{
+    Arc, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
-    mpsc, Arc, Mutex,
+    mpsc,
 };
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -450,7 +451,12 @@ impl WorkerContext {
         if (pressure_level == PressureLevel::Empty || pressure_level == PressureLevel::Low)
             && self
                 .desired_thread_count
-                .compare_exchange(current_desired, current_desired - 1, Ordering::SeqCst, Ordering::Relaxed)
+                .compare_exchange(
+                    current_desired,
+                    current_desired - 1,
+                    Ordering::SeqCst,
+                    Ordering::Relaxed,
+                )
                 .is_ok()
         {
             *self.last_scaling_time.lock().unwrap() = now; // Update last scaling time
@@ -477,7 +483,12 @@ impl WorkerContext {
         // Atomically try to decrement active thread count.
         if self
             .active_thread_count
-            .compare_exchange(current_active, current_active - 1, Ordering::SeqCst, Ordering::Relaxed)
+            .compare_exchange(
+                current_active,
+                current_active - 1,
+                Ordering::SeqCst,
+                Ordering::Relaxed,
+            )
             .is_ok()
         {
             *self.last_scaling_time.lock().unwrap() = elapsed_ns(); // Update last scaling time

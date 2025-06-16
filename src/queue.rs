@@ -10,8 +10,8 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::sync::mpsc;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
 };
 
 // --- QueueError ---
@@ -87,7 +87,10 @@ impl<T> fmt::Debug for OmegaQueue<T> {
 impl<T> OmegaQueue<T> {
     /// Returns the current number of items in the queue.
     pub fn len(&self) -> usize {
-        self.tasks.lock().expect("Queue mutex poisoned for len").len()
+        self.tasks
+            .lock()
+            .expect("Queue mutex poisoned for len")
+            .len()
     }
 
     /// Returns the maximum capacity of the queue.
@@ -156,7 +159,8 @@ impl OmegaQueue<Task> {
         {
             panic!("Invalid low_watermark_percentage");
         }
-        if !(low_watermark_percentage < high_watermark_percentage && high_watermark_percentage < 1.0)
+        if !(low_watermark_percentage < high_watermark_percentage
+            && high_watermark_percentage < 1.0)
         {
             panic!("Invalid high_watermark_percentage");
         }
@@ -243,7 +247,8 @@ impl OmegaQueue<Task> {
 
         if task_option.is_some() {
             let current_len = tasks_guard.len();
-            let low_watermark_count = (self.capacity as f32 * self.low_watermark_percentage) as usize;
+            let low_watermark_count =
+                (self.capacity as f32 * self.low_watermark_percentage) as usize;
             // If the queue was overloaded and now drops below the low watermark, signal idle.
             if self.was_overloaded.load(Ordering::Relaxed)
                 && current_len <= low_watermark_count

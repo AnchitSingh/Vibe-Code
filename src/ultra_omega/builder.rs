@@ -8,7 +8,7 @@ use crate::node::OmegaNode;
 use crate::signals::NodeId;
 use crate::signals::SystemSignal;
 use crate::ultra_omega::UltraOmegaSystem;
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 
 /// Default number of normal `OmegaNode`s if not specified.
 const DEFAULT_NUM_NODES: usize = 8;
@@ -114,7 +114,7 @@ impl UltraOmegaBuilder {
 
         // Create a channel for system-wide signals. The receiver is currently unused.
         let (signal_tx, _signal_rx) = mpsc::channel::<SystemSignal>();
-        
+
         // Initialize the vector of OmegaNodes based on configuration.
         let nodes_vec: Vec<Arc<OmegaNode>> = {
             let mut local_nodes_vec = Vec::with_capacity(num_nodes);
@@ -128,7 +128,7 @@ impl UltraOmegaBuilder {
                     // Normal Node configuration: standard capacity and threads.
                     (10, 1, 4)
                 };
-                
+
                 // Create and store the OmegaNode.
                 let node = Arc::new(
                     OmegaNode::new(

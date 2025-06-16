@@ -6,8 +6,8 @@
 
 use std::collections::VecDeque;
 use std::fmt;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 // --- Constants for Rolling Windows ---
 /// The maximum number of recent task durations to keep in the rolling window for `LocalStats`.

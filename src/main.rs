@@ -16,10 +16,10 @@ use task::{Priority, TaskError, TaskHandle};
 use crate::ultra_omega::{SharedSubmitterStats, UltraOmegaSystem};
 use omega::borrg::OmegaRng;
 use omega::omega_timer::{elapsed_ns, timer_init};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
-use sha2::{Digest, Sha256}; // NEW: Import for hashing
+use std::time::Duration; // NEW: Import for hashing
 
 const USE_HETEROGENEOUS_NODES: bool = true; // Use Super/Normal node configuration
 const NUM_NODES_CONF: usize = 8;
@@ -44,7 +44,7 @@ fn main() {
     println!("=======================================================");
     println!("  PERFORMING ULTRA-Ω CPU STRESS & CORRECTNESS TEST");
     println!("=======================================================\n");
-    // run_cpu_stress_test();
+    run_cpu_stress_test();
 
     println!("\n\n=======================================================");
     println!("  PERFORMING ULTRA-Ω I/O ECHO & TIMEOUT TEST");
@@ -62,9 +62,6 @@ fn run_io_tests() {
     test_client_receive_timeout_corrected();
 
     run_mixed_io_cpu_drone_swarm_test();
-
-    run_cpu_stress_test();
-
 }
 
 // --- I/O Test Implementation: Successful Echo ---
@@ -413,13 +410,11 @@ fn run_cpu_stress_test() {
     monitor.stop();
 }
 
-
-
 // Add this to your main() function:
-// 
+//
 // fn main() {
 //     timer_init().expect("Failed to initialize omega_timer");
-//     
+//
 //     println!("=======================================================");
 //     println!("  PERFORMING ULTRA-Ω MIXED I/O & CPU DRONE SWARM TEST");
 //     println!("=======================================================\n");
@@ -428,8 +423,8 @@ fn run_cpu_stress_test() {
 
 // Add this function to your main.rs file
 
+use serde_json::{Value, json};
 use std::collections::HashMap;
-use serde_json::{json, Value};
 
 // Drone swarm simulation constants
 const NUM_DRONE_NODES: usize = 5;
@@ -460,133 +455,143 @@ fn run_mixed_io_cpu_drone_swarm_test() {
     println!("  MIXED I/O & CPU DRONE SWARM SIMULATION TEST");
     println!("=======================================================\n");
 
-    let system = Arc::new(UltraOmegaSystem::builder().with_nodes(NUM_DRONE_NODES).build());
+    let system = Arc::new(
+        UltraOmegaSystem::builder()
+            .with_nodes(NUM_DRONE_NODES)
+            .build(),
+    );
     let mut rng = OmegaRng::new(12345);
-    
+
     // Phase 1: Setup drone network nodes
     println!("Phase 1: Setting up drone network infrastructure...");
     let drone_listeners = setup_drone_listeners(&system, &mut rng);
-    
+
     // Phase 2: Establish inter-drone connections
     println!("Phase 2: Establishing peer-to-peer connections...");
     let drone_connections = establish_drone_mesh(&system, &mut rng, &drone_listeners);
-    
+
     // Phase 3: Mixed operations simulation
     println!("Phase 3: Running mixed I/O and CPU operations...");
     run_drone_operations(&system, &mut rng, &drone_connections);
-    
+
     println!("\n--- DRONE SWARM SIMULATION COMPLETED ---");
 }
 
-fn setup_drone_listeners(
-    system: &UltraOmegaSystem, 
-    rng: &mut OmegaRng
-) -> HashMap<u32, u64> {
+fn setup_drone_listeners(system: &UltraOmegaSystem, rng: &mut OmegaRng) -> HashMap<u32, u64> {
     let mut listeners = HashMap::new();
-    
+
     for drone_id in 0..NUM_DRONE_NODES as u32 {
         let port = BASE_DRONE_PORT + drone_id as u16;
         let addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-        
-        println!("  Setting up drone {} listener on port {}...", drone_id, port);
-        
-        match system.submit_io_task(
-            IoOp::TcpListen { addr }, 
-            Some(Duration::from_secs(3)), 
-            rng
-        ) {
-            Ok(handle) => {
-                match handle.recv_result() {
-                    Ok(Ok(IoOutput::TcpListenerReady { listener_token, .. })) => {
-                        listeners.insert(drone_id, listener_token);
-                        println!("    ✓ Drone {} listener ready (token: {})", drone_id, listener_token);
-                    }
-                    Ok(Err(e)) => {
-                        println!("    ✗ Drone {} listener failed: {}", drone_id, e);
-                    }
-                    _ => {
-                        println!("    ✗ Drone {} listener setup timeout", drone_id);
-                    }
+
+        println!(
+            "  Setting up drone {} listener on port {}...",
+            drone_id, port
+        );
+
+        match system.submit_io_task(IoOp::TcpListen { addr }, Some(Duration::from_secs(3)), rng) {
+            Ok(handle) => match handle.recv_result() {
+                Ok(Ok(IoOutput::TcpListenerReady { listener_token, .. })) => {
+                    listeners.insert(drone_id, listener_token);
+                    println!(
+                        "    ✓ Drone {} listener ready (token: {})",
+                        drone_id, listener_token
+                    );
                 }
-            }
+                Ok(Err(e)) => {
+                    println!("    ✗ Drone {} listener failed: {}", drone_id, e);
+                }
+                _ => {
+                    println!("    ✗ Drone {} listener setup timeout", drone_id);
+                }
+            },
             Err(e) => {
-                println!("    ✗ Failed to submit listener task for drone {}: {:?}", drone_id, e);
+                println!(
+                    "    ✗ Failed to submit listener task for drone {}: {:?}",
+                    drone_id, e
+                );
             }
         }
     }
-    
+
     listeners
 }
 
 fn establish_drone_mesh(
     system: &UltraOmegaSystem,
     rng: &mut OmegaRng,
-    listeners: &HashMap<u32, u64>
+    listeners: &HashMap<u32, u64>,
 ) -> HashMap<(u32, u32), u64> {
     let mut connections = HashMap::new();
     let mut accept_handles = Vec::new();
     let mut connect_handles = Vec::new();
-    
+
     // Start accept tasks for all listeners
     for (&drone_id, &listener_token) in listeners {
-        for _ in 0..2 { // Each drone can accept up to 2 connections
+        for _ in 0..2 {
+            // Each drone can accept up to 2 connections
             if let Ok(handle) = system.submit_io_task(
                 IoOp::TcpAccept { listener_token },
                 Some(NETWORK_TIMEOUT_LONG),
-                rng
+                rng,
             ) {
                 accept_handles.push((drone_id, handle));
             }
         }
     }
-    
+
     // Create connections between drones (partial mesh for realism)
-    let connection_pairs = vec![
-        (0, 1), (0, 2), (1, 2), (1, 3), (2, 3), (2, 4), (3, 4)
-    ];
-    
+    let connection_pairs = vec![(0, 1), (0, 2), (1, 2), (1, 3), (2, 3), (2, 4), (3, 4)];
+
     for (drone_a, drone_b) in connection_pairs {
         let port = BASE_DRONE_PORT + drone_b as u16;
         let addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-        
+
         println!("  Connecting drone {} to drone {}...", drone_a, drone_b);
-        
+
         if let Ok(handle) = system.submit_io_task(
             IoOp::TcpConnect { peer_addr: addr },
             Some(NETWORK_TIMEOUT_LONG),
-            rng
+            rng,
         ) {
             connect_handles.push(((drone_a, drone_b), handle));
         }
     }
-    
+
     // Process connection results
     for ((drone_a, drone_b), handle) in connect_handles {
         match handle.recv_result() {
-            Ok(Ok(IoOutput::TcpConnectionEstablished { connection_token, .. })) => {
+            Ok(Ok(IoOutput::TcpConnectionEstablished {
+                connection_token, ..
+            })) => {
                 connections.insert((drone_a, drone_b), connection_token);
-                println!("    ✓ Connection established: {} -> {} (token: {})", 
-                         drone_a, drone_b, connection_token);
+                println!(
+                    "    ✓ Connection established: {} -> {} (token: {})",
+                    drone_a, drone_b, connection_token
+                );
             }
             Ok(Err(e)) => {
-                println!("    ✗ Connection failed: {} -> {} ({})", drone_a, drone_b, e);
+                println!(
+                    "    ✗ Connection failed: {} -> {} ({})",
+                    drone_a, drone_b, e
+                );
             }
             _ => {
                 println!("    ✗ Connection timeout: {} -> {}", drone_a, drone_b);
             }
         }
     }
-    
+
     connections
 }
 
 fn run_drone_operations(
     system: &UltraOmegaSystem,
     rng: &mut OmegaRng,
-    connections: &HashMap<(u32, u32), u64>
+    connections: &HashMap<(u32, u32), u64>,
 ) {
     let mut operation_handles = Vec::new();
-    
+
     // Simulate various drone operations
     for i in 0..20 {
         let operation_type = match i % 4 {
@@ -596,15 +601,15 @@ fn run_drone_operations(
             3 => run_emergency_alert_chain(system, rng, connections, i),
             _ => unreachable!(),
         };
-        
+
         if let Some(handles) = operation_type {
             operation_handles.extend(handles);
         }
-        
+
         // Add some realistic delay between operations
         thread::sleep(Duration::from_millis(50));
     }
-    
+
     // Wait for all operations to complete and analyze results
     analyze_operation_results(operation_handles);
 }
@@ -613,23 +618,23 @@ fn run_telemetry_exchange(
     system: &UltraOmegaSystem,
     rng: &mut OmegaRng,
     connections: &HashMap<(u32, u32), u64>,
-    operation_id: usize
+    operation_id: usize,
 ) -> Option<Vec<TaskHandle<Vec<u8>>>> {
     println!("  Running telemetry exchange operation {}...", operation_id);
-    
+
     // Find a random connection
     let connection_keys: Vec<_> = connections.keys().collect();
     if connection_keys.is_empty() {
         println!("    ✗ No connections available for telemetry");
         return None;
     }
-    
+
     let &(drone_a, drone_b) = connection_keys[rng.range(0, connection_keys.len() as u64) as usize];
     let &connection_token = connections.get(&(drone_a, drone_b)).unwrap();
-    
+
     // Create telemetry data
     let telemetry_data = create_telemetry_data(drone_a, operation_id);
-    
+
     // Send telemetry data
     let send_handle = system.submit_io_task(
         IoOp::TcpSend {
@@ -637,14 +642,14 @@ fn run_telemetry_exchange(
             data: telemetry_data.clone(),
         },
         Some(NETWORK_TIMEOUT_SHORT),
-        rng
+        rng,
     );
-    
+
     if send_handle.is_err() {
         println!("    ✗ Failed to submit send task");
         return None;
     }
-    
+
     // Process telemetry data with CPU task
     let cpu_handle = system.submit_cpu_task(
         Priority::Normal,
@@ -653,28 +658,31 @@ fn run_telemetry_exchange(
             // Simulate telemetry processing
             let mut hasher = Sha256::new();
             let mut processed_data = telemetry_data;
-            
+
             for i in 0..TELEMETRY_PROCESSING_ITERATIONS {
                 hasher.update(&processed_data);
                 hasher.update(&i.to_le_bytes());
                 processed_data = hasher.finalize_reset().to_vec();
             }
-            
+
             // Simulate potential processing failure (5% chance)
             if processed_data[0] % 20 == 0 {
                 return Err(TaskError::ExecutionFailed(
-                    "Telemetry data corrupted during processing".into()
+                    "Telemetry data corrupted during processing".into(),
                 ));
             }
-            
+
             Ok(processed_data)
         },
-        rng
+        rng,
     );
-    
+
     match cpu_handle {
         Ok(handle) => {
-            println!("    → Telemetry processing queued for drones {} -> {}", drone_a, drone_b);
+            println!(
+                "    → Telemetry processing queued for drones {} -> {}",
+                drone_a, drone_b
+            );
             Some(vec![handle])
         }
         Err(e) => {
@@ -688,13 +696,16 @@ fn run_mission_data_processing(
     system: &UltraOmegaSystem,
     rng: &mut OmegaRng,
     connections: &HashMap<(u32, u32), u64>,
-    operation_id: usize
+    operation_id: usize,
 ) -> Option<Vec<TaskHandle<Vec<u8>>>> {
-    println!("  Running mission data processing operation {}...", operation_id);
-    
+    println!(
+        "  Running mission data processing operation {}...",
+        operation_id
+    );
+
     // This simulates a more complex operation with chained CPU tasks
     let mission_data = create_mission_data(operation_id);
-    
+
     // First CPU task: data validation and preprocessing
     let preprocess_handle = system.submit_cpu_task(
         Priority::High,
@@ -704,27 +715,27 @@ fn run_mission_data_processing(
             move || -> Result<Vec<u8>, TaskError> {
                 let mut hasher = Sha256::new();
                 let mut processed = data;
-                
+
                 for i in 0..(MISSION_DATA_PROCESSING_ITERATIONS / 3) {
                     hasher.update(&processed);
                     hasher.update("PREPROCESS".as_bytes());
                     hasher.update(&i.to_le_bytes());
                     processed = hasher.finalize_reset().to_vec();
                 }
-                
+
                 // Simulate validation failure (10% chance)
                 if processed[0] % 10 == 0 {
                     return Err(TaskError::ExecutionFailed(
-                        "Mission data validation failed".into()
+                        "Mission data validation failed".into(),
                     ));
                 }
-                
+
                 Ok(processed)
             }
         },
-        rng
+        rng,
     );
-    
+
     // Second CPU task: main processing (will be chained after first completes)
     let main_process_handle = system.submit_cpu_task(
         Priority::Normal,
@@ -734,20 +745,20 @@ fn run_mission_data_processing(
             move || -> Result<Vec<u8>, TaskError> {
                 let mut hasher = Sha256::new();
                 let mut processed = data;
-                
+
                 for i in 0..MISSION_DATA_PROCESSING_ITERATIONS {
                     hasher.update(&processed);
                     hasher.update("MAIN_PROCESS".as_bytes());
                     hasher.update(&i.to_le_bytes());
                     processed = hasher.finalize_reset().to_vec();
                 }
-                
+
                 Ok(processed)
             }
         },
-        rng
+        rng,
     );
-    
+
     match (preprocess_handle, main_process_handle) {
         (Ok(h1), Ok(h2)) => {
             println!("    → Mission data processing chain queued (2 tasks)");
@@ -764,19 +775,23 @@ fn run_heartbeat_with_timeout(
     system: &UltraOmegaSystem,
     rng: &mut OmegaRng,
     connections: &HashMap<(u32, u32), u64>,
-    operation_id: usize
+    operation_id: usize,
 ) -> Option<Vec<TaskHandle<Vec<u8>>>> {
-    println!("  Running heartbeat with timeout operation {}...", operation_id);
-    
+    println!(
+        "  Running heartbeat with timeout operation {}...",
+        operation_id
+    );
+
     // Find a connection
     let connection_keys: Vec<_> = connections.keys().collect();
     if connection_keys.is_empty() {
         return None;
     }
-    
-    let &(drone_a, drone_b) = connection_keys[rng.range(0, (connection_keys.len()-1) as u64) as usize];
+
+    let &(drone_a, drone_b) =
+        connection_keys[rng.range(0, (connection_keys.len() - 1) as u64) as usize];
     let &connection_token = connections.get(&(drone_a, drone_b)).unwrap();
-    
+
     // Send heartbeat
     let heartbeat_data = create_heartbeat_data(drone_a);
     let _send_result = system.submit_io_task(
@@ -785,9 +800,9 @@ fn run_heartbeat_with_timeout(
             data: heartbeat_data,
         },
         Some(NETWORK_TIMEOUT_SHORT),
-        rng
+        rng,
     );
-    
+
     // Try to receive response with very short timeout (likely to fail)
     let receive_handle = system.submit_io_task(
         IoOp::TcpReceive {
@@ -795,9 +810,9 @@ fn run_heartbeat_with_timeout(
             max_bytes: 1024,
         },
         Some(Duration::from_millis(50)), // Very short timeout
-        rng
+        rng,
     );
-    
+
     // Process heartbeat response if received
     if let Ok(io_handle) = receive_handle {
         let cpu_handle = system.submit_cpu_task(
@@ -807,15 +822,18 @@ fn run_heartbeat_with_timeout(
                 // This will likely not run due to I/O timeout
                 Ok(b"heartbeat_processed".to_vec())
             },
-            rng
+            rng,
         );
-        
+
         if let Ok(handle) = cpu_handle {
-            println!("    → Heartbeat with expected timeout queued {} -> {}", drone_a, drone_b);
+            println!(
+                "    → Heartbeat with expected timeout queued {} -> {}",
+                drone_a, drone_b
+            );
             return Some(vec![handle]);
         }
     }
-    
+
     println!("    ✗ Heartbeat operation setup failed");
     None
 }
@@ -824,13 +842,16 @@ fn run_emergency_alert_chain(
     system: &UltraOmegaSystem,
     rng: &mut OmegaRng,
     connections: &HashMap<(u32, u32), u64>,
-    operation_id: usize
+    operation_id: usize,
 ) -> Option<Vec<TaskHandle<Vec<u8>>>> {
-    println!("  Running emergency alert chain operation {}...", operation_id);
-    
+    println!(
+        "  Running emergency alert chain operation {}...",
+        operation_id
+    );
+
     // This simulates a high-priority emergency that needs to be processed and broadcast
     let emergency_data = create_emergency_data(operation_id);
-    
+
     // High-priority CPU task for emergency processing
     let emergency_handle = system.submit_cpu_task(
         Priority::High,
@@ -840,46 +861,51 @@ fn run_emergency_alert_chain(
             move || -> Result<Vec<u8>, TaskError> {
                 let mut hasher = Sha256::new();
                 let mut processed = data;
-                
+
                 for i in 0..(TELEMETRY_PROCESSING_ITERATIONS * 2) {
                     hasher.update(&processed);
                     hasher.update("EMERGENCY".as_bytes());
                     hasher.update(&i.to_le_bytes());
                     processed = hasher.finalize_reset().to_vec();
                 }
-                
+
                 // Emergency processing is critical - low failure rate (2%)
                 if processed[0] % 50 == 0 {
                     return Err(TaskError::ExecutionFailed(
-                        "Critical emergency processing failure".into()
+                        "Critical emergency processing failure".into(),
                     ));
                 }
-                
+
                 Ok(processed)
             }
         },
-        rng
+        rng,
     );
-    
+
     // Try to broadcast to multiple connections (fire-and-forget I/O)
     let mut broadcast_count = 0;
     for &connection_token in connections.values() {
-        if broadcast_count >= 3 { break; } // Limit broadcasts
-        
+        if broadcast_count >= 3 {
+            break;
+        } // Limit broadcasts
+
         let _ = system.submit_io_task(
             IoOp::TcpSend {
                 connection_token,
                 data: emergency_data.clone(),
             },
             Some(NETWORK_TIMEOUT_SHORT),
-            rng
+            rng,
         );
         broadcast_count += 1;
     }
-    
+
     match emergency_handle {
         Ok(handle) => {
-            println!("    → Emergency alert processing queued (broadcast to {} connections)", broadcast_count);
+            println!(
+                "    → Emergency alert processing queued (broadcast to {} connections)",
+                broadcast_count
+            );
             Some(vec![handle])
         }
         Err(e) => {
@@ -891,17 +917,18 @@ fn run_emergency_alert_chain(
 
 fn analyze_operation_results(handles: Vec<TaskHandle<Vec<u8>>>) {
     println!("\nAnalyzing operation results...");
-    
+
     let mut successful_operations = 0;
     let mut failed_operations = 0;
     let mut timeout_operations = 0;
     let mut channel_errors = 0;
-    
+
     for (i, handle) in handles.into_iter().enumerate() {
         match handle.recv_result() {
             Ok(Ok(_result)) => {
                 successful_operations += 1;
-                if i % 5 == 0 { // Print every 5th success
+                if i % 5 == 0 {
+                    // Print every 5th success
                     println!("  ✓ Operation {} completed successfully", i);
                 }
             }
@@ -919,24 +946,27 @@ fn analyze_operation_results(handles: Vec<TaskHandle<Vec<u8>>>) {
             }
         }
     }
-    
+
     println!("\n--- DRONE SWARM OPERATION RESULTS ---");
     println!("  Successful Operations: {}", successful_operations);
     println!("  Failed Operations:     {}", failed_operations);
     println!("  Timeout Operations:    {}", timeout_operations);
     println!("  Channel Errors:        {}", channel_errors);
-    println!("  Total Operations:      {}", 
-             successful_operations + failed_operations + timeout_operations + channel_errors);
-    
+    println!(
+        "  Total Operations:      {}",
+        successful_operations + failed_operations + timeout_operations + channel_errors
+    );
+
     let success_rate = if successful_operations + failed_operations + timeout_operations > 0 {
-        (successful_operations as f64 / 
-         (successful_operations + failed_operations + timeout_operations) as f64) * 100.0
+        (successful_operations as f64
+            / (successful_operations + failed_operations + timeout_operations) as f64)
+            * 100.0
     } else {
         0.0
     };
-    
+
     println!("  Success Rate:          {:.1}%", success_rate);
-    
+
     if success_rate > 60.0 {
         println!("\n>>>> DRONE SWARM RESILIENCE TEST PASSED <<<<");
     } else {
@@ -958,7 +988,7 @@ fn create_telemetry_data(drone_id: u32, operation_id: usize) -> Vec<u8> {
         "battery": 85.0 - (operation_id as f64 * 0.3),
         "status": "OPERATIONAL"
     });
-    
+
     telemetry.to_string().into_bytes()
 }
 
@@ -974,7 +1004,7 @@ fn create_mission_data(operation_id: usize) -> Vec<u8> {
         "objectives": ["SURVEY", "COLLECT_DATA", "RETURN"],
         "priority": "NORMAL"
     });
-    
+
     mission.to_string().into_bytes()
 }
 
@@ -985,7 +1015,7 @@ fn create_heartbeat_data(drone_id: u32) -> Vec<u8> {
         "type": "HEARTBEAT",
         "status": "ALIVE"
     });
-    
+
     heartbeat.to_string().into_bytes()
 }
 
@@ -998,6 +1028,6 @@ fn create_emergency_data(operation_id: usize) -> Vec<u8> {
         "message": "Obstacle detected - immediate attention required",
         "coordinates": {"x": 150.0, "y": 200.0, "z": 80.0}
     });
-    
+
     emergency.to_string().into_bytes()
 }

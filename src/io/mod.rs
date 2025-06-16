@@ -33,7 +33,6 @@ pub enum IoOp {
     },
 
     // --- TCP Operations ---
-
     /// Binds a TCP listener to a specified address and prepares it for accepting connections.
     ///
     /// This is a one-shot setup operation that returns a `TcpListenerReady` output
@@ -113,7 +112,6 @@ pub enum IoOutput {
     },
 
     // --- TCP ---
-
     /// Returned on a successful `IoOp::TcpListen` operation.
     TcpListenerReady {
         /// The `Token` assigned to the newly created TCP listener.
@@ -159,5 +157,5 @@ pub enum IoOutput {
 
 // --- Private Reactor Submodule ---
 // The implementation details of the `GlobalReactor` are internal and not part of the public API.
-pub(crate) mod reactor;
 pub(crate) mod poller;
+pub(crate) mod reactor;

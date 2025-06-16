@@ -5,7 +5,7 @@
 //! units of work within the CPU Circulatory System.
 
 use std::fmt;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 

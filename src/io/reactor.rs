@@ -7,9 +7,9 @@
 use crate::io::poller::Poller;
 use crate::io::{IoOp, IoOutput, Token};
 use crate::task::{TaskError, TaskId};
-use omega::ohs::OmegaBucket;
-use omega::omega_timer::{ms_to_ticks, TimeoutManager, TimerConfig};
 use omega::OmegaHashSet;
+use omega::ohs::OmegaBucket;
+use omega::omega_timer::{TimeoutManager, TimerConfig, ms_to_ticks};
 use std::collections::VecDeque;
 use std::io;
 use std::net::{SocketAddr, TcpListener, UdpSocket};
@@ -710,7 +710,8 @@ impl GlobalReactor {
                                 let _ = self.poller.rearm_for_write(context.fd, context.token);
                             }
                         }
-                        _ => { /* 0 bytes written, or other unexpected case. Do nothing for now. */ }
+                        _ => { /* 0 bytes written, or other unexpected case. Do nothing for now. */
+                        }
                     }
                 }
 

@@ -7,10 +7,10 @@
 use crate::node::OmegaNode;
 use crate::ultra_omega::SharedSubmitterStats;
 use omega::omega_timer::elapsed_ns;
-use std::io::{stdout, Write};
+use std::io::{Write, stdout};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use std::thread;
 use std::time::Duration;
@@ -150,7 +150,11 @@ fn print_dashboard(nodes: &[Arc<OmegaNode>], stats: &SharedSubmitterStats, start
         let desired_t = node.desired_threads();
 
         // Determine node type based on its configured max threads (a simple heuristic).
-        let node_type = if node.max_threads > 4 { "SUPER" } else { "NORM" };
+        let node_type = if node.max_threads > 4 {
+            "SUPER"
+        } else {
+            "NORM"
+        };
 
         let bar = render_pressure_bar(pressure, max_p);
         let queue_str = format!("{}/{}", q_len, q_cap);
@@ -189,10 +193,15 @@ fn print_dashboard(nodes: &[Arc<OmegaNode>], stats: &SharedSubmitterStats, start
 /// A `String` containing the formatted pressure bar with ANSI color codes.
 fn render_pressure_bar(current: usize, max: usize) -> String {
     const BAR_WIDTH: usize = 30;
-    let ratio = if max == 0 { 0.0 } else { current as f32 / max as f32 };
+    let ratio = if max == 0 {
+        0.0
+    } else {
+        current as f32 / max as f32
+    };
     let filled_width = (ratio * BAR_WIDTH as f32).round() as usize;
 
-    let bar: String = "█".repeat(filled_width) + &"-".repeat(BAR_WIDTH.saturating_sub(filled_width));
+    let bar: String =
+        "█".repeat(filled_width) + &"-".repeat(BAR_WIDTH.saturating_sub(filled_width));
 
     // ANSI color codes for pressure levels.
     let color = if ratio > 0.85 {
