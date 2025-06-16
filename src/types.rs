@@ -1,6 +1,5 @@
 // src/types.rs
 
-use crate::queue::QueueError;
 use std::collections::VecDeque;
 use std::fmt;
 use std::sync::Mutex;
@@ -50,7 +49,11 @@ pub struct LocalStats {
     recent_task_durations_micros: Mutex<VecDeque<u64>>,
     recent_task_outcomes: Mutex<VecDeque<u8>>,
 }
-
+impl Default for LocalStats {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl LocalStats {
     pub fn new() -> Self {
         LocalStats {

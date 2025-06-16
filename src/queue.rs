@@ -163,16 +163,14 @@ impl OmegaQueue<Task> {
         if task_option.is_some() {
             let current_len = tasks_guard.len();
             let low_watermark_count = (self.capacity as f32 * self.low_watermark_percentage) as usize;
-            if self.was_overloaded.load(Ordering::Relaxed) && current_len <= low_watermark_count {
-                if self.was_overloaded.compare_exchange(true, false, Ordering::SeqCst, Ordering::Relaxed).is_ok() {
-                    let signal = SystemSignal::NodeIdle {
+            if self.was_overloaded.load(Ordering::Relaxed) && current_len <= low_watermark_count && self.was_overloaded.compare_exchange(true, false, Ordering::SeqCst, Ordering::Relaxed).is_ok() {
+                let signal = SystemSignal::NodeIdle {
                         node_id: self.node_id,
                         queue_id: Some(self.id),
                     };
                     if self.signal_tx.send(signal).is_err() {
                         self.was_overloaded.store(true, Ordering::SeqCst);
                     }
-                }
             }
         } else if self.is_closed.load(Ordering::Relaxed) && tasks_guard.is_empty() {
             if self.was_overloaded.compare_exchange(true, false, Ordering::SeqCst, Ordering::Relaxed).is_ok() {

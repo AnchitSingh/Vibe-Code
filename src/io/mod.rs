@@ -1,6 +1,5 @@
 // src/io/mod.rs
 
-use crate::task::TaskError;
 use std::net::SocketAddr;
 
 // --- Public I/O Enums ---
@@ -22,73 +21,90 @@ pub enum IoOp {
         data_to_send: Vec<u8>,
         // Note: A timeout will be handled by the Reactor internally.
     },
-    /// Initiates a non-blocking TCP connection to a peer.
-    TcpConnect {
-        /// The address of the peer to connect to.
-        peer_addr: SocketAddr,
-    },
-    /// Sends data over an existing, established TCP connection.
-    TcpSend {
-        /// The token identifying the established connection.
-        connection_token: Token,
-        /// The data payload to send.
-        data: Vec<u8>,
-    },
-    /// Issues a request to receive data from an established TCP connection.
-    TcpReceive {
-        /// The token identifying the established connection.
-        connection_token: Token,
-        /// The maximum number of bytes to read in this operation.
-        max_bytes: usize,
-    },
-    /// Closes an established TCP connection.
-    CloseConnection {
-        /// The token identifying the connection to close.
-        connection_token: Token,
-    },
+   
+   // --- TCP Operations ---
+
+    /// Binds a TCP listener to an address and prepares it for accepting connections.
+    /// This is a one-shot setup operation.
     TcpListen {
         addr: SocketAddr,
     },
+
+    /// Waits for the next incoming connection on a specific listener.
+    /// This is a one-shot "wait" operation.
+    TcpAccept {
+        listener_token: Token,
+    },
+
+    /// Initiates a non-blocking TCP connection to a peer.
+    TcpConnect {
+        peer_addr: SocketAddr,
+    },
+
+    /// Sends data over an existing, established TCP connection.
+    TcpSend {
+        connection_token: Token,
+        data: Vec<u8>,
+    },
+
+    /// Issues a request to receive data from an established TCP connection.
+    TcpReceive {
+        connection_token: Token,
+        max_bytes: usize,
+    },
+
+    /// Closes an established TCP connection or an active listener.
+    CloseConnection {
+        connection_token: Token,
+    },
+
 }
 
 /// Defines the successful outcomes of an `IoOp`.
 /// This is what the client receives in the `Ok()` variant of a `TaskHandle` result.
 #[derive(Debug)]
 pub enum IoOutput {
-    /// The response received from a `UdpSendAndListenOnce` operation.
+    // --- UDP ---
     UdpResponse {
-        /// The data received.
         data: Vec<u8>,
-        /// The address of the peer that sent the response.
         from_addr: SocketAddr,
     },
-    /// Indicates that a `TcpConnect` operation was successful.
-    TcpConnectionEstablished {
-        /// The unique token for the new connection, to be used in subsequent operations.
-        connection_token: Token,
-        /// The address of the connected peer.
-        peer_addr: SocketAddr,
+    
+    // --- TCP ---
+
+    /// Returned on a successful `IoOp::TcpListen`.
+    TcpListenerReady {
+        listener_token: Token,
+        local_addr: SocketAddr,
     },
-    /// Indicates that a `TcpSend` operation completed successfully.
-    TcpDataSent {
-        /// The number of bytes successfully written to the send buffer.
-        bytes_sent: usize,
-    },
-    /// The data received from a `TcpReceive` operation.
-    TcpDataReceived {
-        /// The data buffer. An empty Vec indicates the connection was closed by the peer.
-        data: Vec<u8>,
-    },
-    /// Indicates that a connection was successfully closed.
-    ConnectionClosed,
+    
+    /// Returned on a successful `IoOp::TcpAccept`.
     NewConnectionAccepted {
-        /// The unique token for the new connection, to be used for send/receive.
+        /// The token for the newly accepted client connection.
         connection_token: Token,
-        /// The address of the new client.
         peer_addr: SocketAddr,
         /// The token of the listener that accepted this connection.
         listener_token: Token,
     },
+    
+    /// Returned on a successful `IoOp::TcpConnect`.
+    TcpConnectionEstablished {
+        connection_token: Token,
+        peer_addr: SocketAddr,
+    },
+    
+    /// Returned on a successful `IoOp::TcpSend`.
+    TcpDataSent {
+        bytes_sent: usize,
+    },
+    
+    /// Data received from a `IoOp::TcpReceive`. An empty Vec indicates graceful shutdown by the peer.
+    TcpDataReceived {
+        data: Vec<u8>,
+    },
+    
+    /// Confirmation that a connection or listener was closed.
+    ConnectionClosed,
 }
 
 

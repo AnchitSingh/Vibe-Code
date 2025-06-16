@@ -2,7 +2,7 @@
 
 // This module is Linux-only, as per our plan.
 
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::os::unix::io::RawFd;
 use std::io;
 
 /// A thin, unsafe wrapper around the Linux `epoll` and `eventfd` APIs.

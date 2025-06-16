@@ -9,12 +9,26 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 pub struct NodeId(pub usize);
 static NEXT_NODE_ID: AtomicUsize = AtomicUsize::new(1);
 impl NodeId { pub fn new() -> Self { NodeId(NEXT_NODE_ID.fetch_add(1, Ordering::Relaxed)) } }
+impl Default for NodeId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl fmt::Display for NodeId { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "Node({})", self.0) } }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct QueueId(usize);
 static NEXT_QUEUE_ID: AtomicUsize = AtomicUsize::new(1);
-impl QueueId { pub fn new() -> Self { QueueId(NEXT_QUEUE_ID.fetch_add(1, Ordering::Relaxed)) } }
+impl QueueId { 
+    pub fn new() -> Self {
+         QueueId(NEXT_QUEUE_ID.fetch_add(1, Ordering::Relaxed)) 
+    }
+}
+impl Default for QueueId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl fmt::Display for QueueId { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "Queue({})", self.0) } }
 
 

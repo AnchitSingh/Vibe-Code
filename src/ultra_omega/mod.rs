@@ -16,7 +16,7 @@ use omega::borrg::{OmegaRng,BiasStrategy};
 use std::io as std_io;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
+    atomic::AtomicUsize,
     Arc,
 };
 use std::thread::{Builder, JoinHandle};
@@ -40,7 +40,11 @@ impl SharedSubmitterStats {
         }
     }
 }
-
+impl Default for SharedSubmitterStats {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 pub struct UltraOmegaSystem {
     pub nodes: Arc<Vec<Arc<OmegaNode>>>,
     reactor_thread: Option<JoinHandle<()>>,
@@ -186,17 +190,17 @@ impl UltraOmegaSystem {
                         next = rng.range_biased(
                             prev.wrapping_add(1),
                             boundary,
-                            BiasStrategy::Power(3.14),
+                            BiasStrategy::Power(std::f64::consts::PI),
                         );
-                        if 4 * next >= boundary as u64 {
+                        if 4 * next >= boundary {
                             // Weaker bias against upper 1/4
                             next = rng.range_biased(
                                 prev.wrapping_add(1),
                                 boundary,
-                                BiasStrategy::Power(3.14),
+                                BiasStrategy::Power(std::f64::consts::PI),
                             );
                         }
-                        if 4 * next >= boundary as u64 {
+                        if 4 * next >= boundary {
                             // Weaker bias against upper 1/4
                             next = rng.range_biased(
                                 prev.wrapping_add(1),
@@ -204,7 +208,7 @@ impl UltraOmegaSystem {
                                 BiasStrategy::Stepped,
                             );
                         }
-                        if 4 * next >= boundary as u64 {
+                        if 4 * next >= boundary {
                             // Weaker bias against upper 1/4
                             next = rng.range_biased(
                                 prev.wrapping_add(1),
@@ -212,7 +216,7 @@ impl UltraOmegaSystem {
                                 BiasStrategy::Weighted,
                             );
                         }
-                        if 4 * next >= boundary as u64 {
+                        if 4 * next >= boundary {
                             // Weaker bias against upper 1/4
                             next = rng.range_biased(
                                 prev.wrapping_add(1),
@@ -234,11 +238,9 @@ impl UltraOmegaSystem {
                 let node = &self.nodes[node_idx];
                 let pressure = node.get_pressure();
 
-                if pressure < node.max_pressure() {
-                    if pressure < min_pressure_found {
-                        min_pressure_found = pressure;
-                        best_node_index = Some(node_idx);
-                    }
+                if (pressure < node.max_pressure()) && pressure < min_pressure_found {
+                    min_pressure_found = pressure;
+                    best_node_index = Some(node_idx);
                 }
             }
 
@@ -250,11 +252,9 @@ impl UltraOmegaSystem {
                     let pressure = node.get_pressure();
                     let max_pressure = node.max_pressure();
         
-                    if pressure < max_pressure {
-                        if pressure < min_pressure_found {
-                            min_pressure_found = pressure;
-                            best_node_index = Some(node_idx);
-                        }
+                    if (pressure < max_pressure) && pressure < min_pressure_found {
+                        min_pressure_found = pressure;
+                        best_node_index = Some(node_idx);
                     }
                 }
                 if let Some(idx) = best_node_index {

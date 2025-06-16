@@ -90,7 +90,7 @@ impl OmegaNode {
         let pressure_float = if c > 0.0 && k > 0.0 {
             (q/k) * 100.0
         } else if q > 0.0 { 100.0 } else { 0.0 };
-        self.pressure.store(pressure_float.max(0.0).min(100.0) as usize, Ordering::Relaxed);
+        self.pressure.store(pressure_float.clamp(0.0, 100.0) as usize, Ordering::Relaxed);
     }
 
     pub fn get_pressure(&self) -> usize { self.pressure.load(Ordering::Relaxed) }
@@ -270,10 +270,8 @@ impl WorkerContext {
         if now.saturating_sub(last_overload_time) < self.scale_down_cooldown { return; }
         let pressure = self.get_pressure_from_context();
         let pressure_level = self.get_pressure_level_from_pressure(pressure);
-        if pressure_level == PressureLevel::Empty || pressure_level == PressureLevel::Low {
-            if self.desired_thread_count.compare_exchange(current_desired, current_desired - 1, Ordering::SeqCst, Ordering::Relaxed).is_ok() {
-                *self.last_scaling_time.lock().unwrap() = now;
-            }
+        if (pressure_level == PressureLevel::Empty || pressure_level == PressureLevel::Low) && self.desired_thread_count.compare_exchange(current_desired, current_desired - 1, Ordering::SeqCst, Ordering::Relaxed).is_ok() {
+            *self.last_scaling_time.lock().unwrap() = now;
         }
     }
 
@@ -296,7 +294,7 @@ impl WorkerContext {
         let c = self.active_thread_count.load(Ordering::Relaxed) as f64;
         let k = self.task_queue.capacity() as f64;
         let pressure_float = if c > 0.0 && k > 0.0 { (q/k) * 100.0 } else if q > 0.0 { 100.0 } else { 0.0 };
-        pressure_float.max(0.0).min(100.0) as usize
+        pressure_float.clamp(0.0, 100.0) as usize
     }
 
     fn get_pressure_level_from_pressure(&self, pressure: usize) -> PressureLevel {

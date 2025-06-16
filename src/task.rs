@@ -22,7 +22,11 @@ impl TaskId {
         self.0
     }
 }
-
+impl Default for TaskId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl fmt::Display for TaskId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Task({})", self.0)
@@ -31,18 +35,19 @@ impl fmt::Display for TaskId {
 
 // --- Priority ---
 /// Defines the priority of a task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug,Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Priority {
     Low,
+    #[default]
     Normal,
     High,
 }
 
-impl Default for Priority {
-    fn default() -> Self {
-        Priority::Normal
-    }
-}
+// impl Default for Priority {
+//     fn default() -> Self {
+//         Priority::Normal
+//     }
+// }
 
 // --- TaskError ---
 /// Represents errors that can occur during a task's execution.
