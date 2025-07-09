@@ -11,6 +11,7 @@ pub mod builder; // Re-exported for public use.
 
 // --- Public Re-exports ---
 pub use builder::UltraOmegaBuilder;
+use omega::omega_timer::elapsed_ns;
 
 // --- Internal Imports ---
 use crate::io::reactor::{GlobalReactor, ReactorCommand};
@@ -204,6 +205,7 @@ impl UltraOmegaSystem {
         let (tx, rx) = mpsc::channel();
         let task_id = TaskId::new(); // A unique ID for this I/O operation.
 
+        // println!("Hello jii {}",elapsed_ns());
         // 2. Create the command that the launcher task will send to the Reactor.
         // This command bundles the I/O operation details and the result sender.
         let command = ReactorCommand::SubmitIoOp {

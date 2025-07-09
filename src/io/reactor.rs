@@ -7,7 +7,7 @@ use omega::omega_timer::{TimeoutManager, TimerConfig, ms_to_ticks};
 use ovp::{DroneId, OmegaSocket, parse_ovp_frame_fast};
 use std::collections::VecDeque;
 use std::io;
-use std::net::{SocketAddr, TcpListener, UdpSocket};
+use std::net::{SocketAddr};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -22,11 +22,8 @@ enum ReactorAction {
 pub(crate) enum ReactorCommand {
     SubmitIoOp {
         op: IoOp,
-
         task_id: TaskId,
-
         result_tx: mpsc::Sender<Result<IoOutput, TaskError>>,
-
         timeout: Option<Duration>,
     },
 
@@ -37,40 +34,18 @@ pub(crate) enum ReactorCommand {
 pub(crate) enum IoState {
     OvpListening,
     OvpReceiving,
-
-    TcpListening,
-
-    TcpAccepting,
-
-    UdpWaitingForResponse,
-
-    TcpConnecting,
-
-    TcpWriting,
-
-    TcpReading,
-
-    TcpIdle,
 }
 
 #[derive(Clone)]
 pub(crate) struct IoOperationContext {
     pub task_id: TaskId,
-
     pub token: Token,
-
     pub fd: RawFd,
-
     pub state: IoState,
-
     pub result_tx: mpsc::Sender<Result<IoOutput, TaskError>>,
-
     pub read_buffer: Vec<u8>,
-
     pub write_buffer: VecDeque<u8>,
-
     pub peer_address: Option<SocketAddr>,
-
     pub ovp_socket: Option<OmegaSocket>,
     pub my_drone_id: Option<DroneId>,
 }
@@ -82,7 +57,7 @@ impl Default for IoOperationContext {
             task_id: TaskId::new(),
             token: 0,
             fd: -1,
-            state: IoState::TcpIdle,
+            state: IoState::OvpListening,
             result_tx: tx,
             read_buffer: Vec::new(),
             write_buffer: VecDeque::new(),
@@ -132,7 +107,7 @@ impl GlobalReactor {
             poller,
             shutdown_event_fd,
             next_token: AtomicU64::new(1),
-            connections: OmegaHashSet::new_u64_map(1024),
+            connections: OmegaHashSet::new(1024),
             timeout_manager,
         })
     }
@@ -295,235 +270,12 @@ impl GlobalReactor {
                     )));
                 }
             }
-            IoOp::UdpSendAndListenOnce {
-                peer_addr,
-                data_to_send,
-            } => {
-                let socket = match UdpSocket::bind("0.0.0.0:0") {
-                    Ok(s) => s,
-                    Err(e) => {
-                        let _ = result_tx.send(Err(TaskError::ExecutionFailed(Box::new(e))));
-                        return;
-                    }
-                };
-                socket
-                    .set_nonblocking(true)
-                    .expect("Failed to set UDP socket to non-blocking");
-
-                if let Err(e) = socket.send_to(&data_to_send, peer_addr) {
-                    let _ = result_tx.send(Err(TaskError::ExecutionFailed(Box::new(e))));
-                    return;
-                }
-
-                let fd = socket.as_raw_fd();
-                let token = self.next_token.fetch_add(1, Ordering::Relaxed);
-                std::mem::forget(socket);
-
-                let context = IoOperationContext {
-                    task_id,
-                    token,
-                    fd,
-                    state: IoState::UdpWaitingForResponse,
-                    result_tx,
-                    read_buffer: Vec::new(),
-                    write_buffer: VecDeque::new(),
-                    peer_address: Some(peer_addr),
-                    ovp_socket: None,
-                    my_drone_id: None,
-                };
-
-                if let Err(e) = self.poller.add_fd_for_read(fd, token) {
-                    let _ = context
-                        .result_tx
-                        .send(Err(TaskError::ExecutionFailed(Box::new(e))));
-                    unsafe {
-                        libc::close(fd);
-                    }
-                    return;
-                }
-
-                self.connections.insert(token, context);
-                schedule_timeout(&mut self.timeout_manager, token);
-            }
-            IoOp::TcpListen { addr } => match TcpListener::bind(addr) {
-                Ok(listener) => {
-                    listener
-                        .set_nonblocking(true)
-                        .expect("Failed to set listener to non-blocking");
-                    let fd = listener.as_raw_fd();
-                    let actual_addr = listener
-                        .local_addr()
-                        .expect("Failed to get local_addr from newly bound listener");
-                    let token = self.next_token.fetch_add(1, Ordering::Relaxed);
-                    std::mem::forget(listener);
-
-                    let context = IoOperationContext {
-                        task_id,
-                        token,
-                        fd,
-                        state: IoState::TcpListening,
-                        result_tx,
-                        read_buffer: Vec::new(),
-                        write_buffer: VecDeque::new(),
-                        peer_address: Some(actual_addr),
-                        ovp_socket: None,
-                        my_drone_id: None,
-                    };
-
-                    if let Err(e) = self.poller.add_fd_for_read(fd, token) {
-                        let _ = context
-                            .result_tx
-                            .send(Err(TaskError::ExecutionFailed(Box::new(e))));
-                        unsafe {
-                            libc::close(fd);
-                        }
-                        return;
-                    }
-
-                    let _ = context.result_tx.send(Ok(IoOutput::TcpListenerReady {
-                        listener_token: token,
-                        local_addr: actual_addr,
-                    }));
-
-                    self.connections.insert(token, context);
-                }
-                Err(e) => {
-                    let _ = result_tx.send(Err(TaskError::ExecutionFailed(Box::new(e))));
-                }
-            },
-            IoOp::TcpAccept { listener_token } => {
-                if let Some(listener_context) = self.connections.get_mut(&listener_token) {
-                    listener_context.state = IoState::TcpAccepting;
-                    listener_context.result_tx = result_tx;
-                    listener_context.task_id = task_id;
-
-                    schedule_timeout(&mut self.timeout_manager, listener_token);
-
-                    let _ = self
-                        .poller
-                        .rearm_for_read(listener_context.fd, listener_token);
-                } else {
-                    let _ =
-                        result_tx.send(Err(TaskError::ExecutionFailed(Box::new(io::Error::new(
-                            io::ErrorKind::NotFound,
-                            "Listener token not found for TcpAccept",
-                        )))));
-                }
-            }
-            IoOp::TcpConnect { peer_addr } => {
-                let socket_fd = unsafe {
-                    libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_NONBLOCK, 0)
-                };
-
-                if socket_fd < 0 {
-                    let _ = result_tx.send(Err(TaskError::ExecutionFailed(Box::new(
-                        io::Error::last_os_error(),
-                    ))));
-                    return;
-                }
-
-                let addr = socket_addr_to_sockaddr_in(&peer_addr);
-
-                unsafe {
-                    libc::connect(
-                        socket_fd,
-                        &addr as *const _ as *const libc::sockaddr,
-                        std::mem::size_of::<libc::sockaddr_in>() as u32,
-                    );
-                };
-
-                let connect_err = io::Error::last_os_error();
-
-                if connect_err.raw_os_error() != Some(libc::EINPROGRESS) {
-                    let _ = result_tx.send(Err(TaskError::ExecutionFailed(Box::new(connect_err))));
-                    unsafe {
-                        libc::close(socket_fd);
-                    }
-                    return;
-                }
-
-                let token = self.next_token.fetch_add(1, Ordering::Relaxed);
-                let context = IoOperationContext {
-                    task_id,
-                    token,
-                    fd: socket_fd,
-                    state: IoState::TcpConnecting,
-                    result_tx,
-                    read_buffer: Vec::new(),
-                    write_buffer: VecDeque::new(),
-                    peer_address: Some(peer_addr),
-                    ovp_socket: None,
-                    my_drone_id: None,
-                };
-
-                if let Err(e) = self.poller.add_fd_for_write(socket_fd, token) {
-                    let _ = context
-                        .result_tx
-                        .send(Err(TaskError::ExecutionFailed(Box::new(e))));
-                    unsafe {
-                        libc::close(socket_fd);
-                    }
-                    return;
-                }
-
-                self.connections.insert(token, context);
-                schedule_timeout(&mut self.timeout_manager, token);
-            }
-            IoOp::TcpSend {
-                connection_token,
-                data,
-            } => {
-                if let Some(context) = self.connections.get_mut(&connection_token) {
-                    context.result_tx = result_tx;
-                    context.state = IoState::TcpWriting;
-                    context.write_buffer.extend(data);
-                    let _ = self.poller.rearm_for_write(context.fd, context.token);
-                    schedule_timeout(&mut self.timeout_manager, connection_token);
-                } else {
-                    let _ =
-                        result_tx.send(Err(TaskError::ExecutionFailed(Box::new(io::Error::new(
-                            io::ErrorKind::NotFound,
-                            "Connection token not found for TcpSend",
-                        )))));
-                }
-            }
-            IoOp::TcpReceive {
-                connection_token, ..
-            } => {
-                if let Some(context) = self.connections.get_mut(&connection_token) {
-                    context.result_tx = result_tx;
-                    context.state = IoState::TcpReading;
-                    let _ = self.poller.rearm_for_read(context.fd, context.token);
-                    schedule_timeout(&mut self.timeout_manager, connection_token);
-                } else {
-                    let _ =
-                        result_tx.send(Err(TaskError::ExecutionFailed(Box::new(io::Error::new(
-                            io::ErrorKind::NotFound,
-                            "Connection token not found for TcpReceive",
-                        )))));
-                }
-            }
-            IoOp::CloseConnection { connection_token } => {
-                if let Some(context) = self.connections.remove(&connection_token) {
-                    let _ = self.poller.remove_fd(context.fd);
-                    unsafe {
-                        libc::close(context.fd);
-                    }
-                    let _ = result_tx.send(Ok(IoOutput::ConnectionClosed));
-                } else {
-                    let _ =
-                        result_tx.send(Err(TaskError::ExecutionFailed(Box::new(io::Error::new(
-                            io::ErrorKind::NotFound,
-                            "Connection token not found for CloseConnection",
-                        )))));
-                }
-            }
         }
     }
 
     fn handle_event(&mut self, token: u64, _event_flags: u32) {
-        let mut context_is_finished = false;
-        let mut new_connection_to_add: Option<(Token, IoOperationContext)> = None;
+        let context_is_finished = false;
+        let new_connection_to_add: Option<(Token, IoOperationContext)> = None;
 
         if let Some(context) = self.connections.get_mut(&token) {
             match context.state {
@@ -558,217 +310,6 @@ impl GlobalReactor {
                 }
                 IoState::OvpListening => {
                     let _ = self.poller.rearm_for_read(context.fd, token);
-                }
-                IoState::TcpAccepting => {
-                    let mut peer_addr_storage: libc::sockaddr_in = unsafe { std::mem::zeroed() };
-                    let mut peer_addr_len =
-                        std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
-
-                    let new_fd = unsafe {
-                        libc::accept(
-                            context.fd,
-                            &mut peer_addr_storage as *mut _ as *mut libc::sockaddr,
-                            &mut peer_addr_len,
-                        )
-                    };
-
-                    if new_fd >= 0 {
-                        unsafe {
-                            let flags = libc::fcntl(new_fd, libc::F_GETFL, 0);
-                            libc::fcntl(new_fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
-                        }
-
-                        let peer_addr = sockaddr_in_to_socket_addr(&peer_addr_storage);
-                        let new_token = self.next_token.fetch_add(1, Ordering::Relaxed);
-
-                        let (new_tx, _) = mpsc::channel();
-                        let new_context = IoOperationContext {
-                            task_id: TaskId::new(),
-                            token: new_token,
-                            fd: new_fd,
-                            state: IoState::TcpIdle,
-                            result_tx: new_tx,
-                            read_buffer: Vec::new(),
-                            write_buffer: VecDeque::new(),
-                            peer_address: Some(peer_addr),
-                            ovp_socket: None,
-                            my_drone_id: None,
-                        };
-
-                        new_connection_to_add = Some((new_token, new_context));
-
-                        let _ = context.result_tx.send(Ok(IoOutput::NewConnectionAccepted {
-                            connection_token: new_token,
-                            peer_addr,
-                            listener_token: token,
-                        }));
-
-                        context.state = IoState::TcpListening;
-                    } else {
-                        let err = io::Error::last_os_error();
-                        if err.kind() != io::ErrorKind::WouldBlock {
-                            let _ = context
-                                .result_tx
-                                .send(Err(TaskError::ExecutionFailed(Box::new(err))));
-                            context.state = IoState::TcpListening;
-                        } else {
-                            let _ = self.poller.rearm_for_read(context.fd, token);
-                        }
-                    }
-                }
-
-                IoState::TcpListening => {
-                    let _ = self.poller.rearm_for_read(context.fd, token);
-                }
-                IoState::TcpConnecting => {
-                    let mut error: libc::c_int = 0;
-                    let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
-
-                    unsafe {
-                        libc::getsockopt(
-                            context.fd,
-                            libc::SOL_SOCKET,
-                            libc::SO_ERROR,
-                            &mut error as *mut _ as *mut libc::c_void,
-                            &mut len,
-                        );
-                    };
-
-                    if error == 0 {
-                        let _ = context
-                            .result_tx
-                            .send(Ok(IoOutput::TcpConnectionEstablished {
-                                connection_token: token,
-                                peer_addr: context
-                                    .peer_address
-                                    .expect("Connecting context must have a peer_address"),
-                            }));
-
-                        context.state = IoState::TcpIdle;
-                    } else {
-                        let err = io::Error::from_raw_os_error(error);
-                        let _ = context
-                            .result_tx
-                            .send(Err(TaskError::ExecutionFailed(Box::new(err))));
-
-                        context_is_finished = true;
-                    }
-                }
-
-                IoState::TcpReading => {
-                    let mut read_buf = vec![0; 2048];
-                    match unsafe {
-                        libc::read(context.fd, read_buf.as_mut_ptr() as *mut _, read_buf.len())
-                    } {
-                        -1 => {
-                            let err = io::Error::last_os_error();
-                            if err.kind() != io::ErrorKind::WouldBlock {
-                                let _ = context
-                                    .result_tx
-                                    .send(Err(TaskError::ExecutionFailed(Box::new(err))));
-                                context_is_finished = true;
-                            } else {
-                                let _ = self.poller.rearm_for_read(context.fd, context.token);
-                            }
-                        }
-                        0 => {
-                            let _ = context
-                                .result_tx
-                                .send(Ok(IoOutput::TcpDataReceived { data: vec![] }));
-                            context_is_finished = true;
-                        }
-                        n => {
-                            read_buf.truncate(n as usize);
-                            let _ = context
-                                .result_tx
-                                .send(Ok(IoOutput::TcpDataReceived { data: read_buf }));
-                            context.state = IoState::TcpIdle;
-                        }
-                    }
-                }
-
-                IoState::TcpWriting => {
-                    let data_to_write = context.write_buffer.make_contiguous();
-                    match unsafe {
-                        libc::write(
-                            context.fd,
-                            data_to_write.as_ptr() as *const _,
-                            data_to_write.len(),
-                        )
-                    } {
-                        -1 => {
-                            let err = io::Error::last_os_error();
-                            if err.kind() != io::ErrorKind::WouldBlock {
-                                let _ = context
-                                    .result_tx
-                                    .send(Err(TaskError::ExecutionFailed(Box::new(err))));
-                                context_is_finished = true;
-                            } else {
-                                let _ = self.poller.rearm_for_write(context.fd, context.token);
-                            }
-                        }
-                        n if n > 0 => {
-                            let bytes_written = n as usize;
-
-                            let total_sent_previously =
-                                data_to_write.len() - context.write_buffer.len() + bytes_written;
-                            context.write_buffer.drain(..bytes_written);
-                            if context.write_buffer.is_empty() {
-                                context.state = IoState::TcpIdle;
-                                let _ = context.result_tx.send(Ok(IoOutput::TcpDataSent {
-                                    bytes_sent: total_sent_previously,
-                                }));
-                            } else {
-                                let _ = self.poller.rearm_for_write(context.fd, context.token);
-                            }
-                        }
-                        _ => { /* 0 bytes written, or other unexpected case. Do nothing for now. */
-                        }
-                    }
-                }
-
-                IoState::UdpWaitingForResponse => {
-                    let mut read_buf = vec![0; 4096];
-                    let mut peer_addr_storage: libc::sockaddr_in = unsafe { std::mem::zeroed() };
-                    let mut peer_addr_len =
-                        std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
-
-                    match unsafe {
-                        libc::recvfrom(
-                            context.fd,
-                            read_buf.as_mut_ptr() as *mut _,
-                            read_buf.len(),
-                            0,
-                            &mut peer_addr_storage as *mut _ as *mut libc::sockaddr,
-                            &mut peer_addr_len,
-                        )
-                    } {
-                        -1 => {
-                            let err = io::Error::last_os_error();
-                            if err.kind() != io::ErrorKind::WouldBlock {
-                                let _ = context
-                                    .result_tx
-                                    .send(Err(TaskError::ExecutionFailed(Box::new(err))));
-                                context_is_finished = true;
-                            }
-                        }
-                        n => {
-                            read_buf.truncate(n as usize);
-
-                            let from_addr = sockaddr_in_to_socket_addr(&peer_addr_storage);
-                            let _ = context.result_tx.send(Ok(IoOutput::UdpResponse {
-                                data: read_buf,
-                                from_addr,
-                            }));
-                            context_is_finished = true;
-                        }
-                    }
-                }
-                IoState::TcpIdle => {
-                    let mut buf = [0u8; 0];
-                    if unsafe { libc::read(context.fd, buf.as_mut_ptr() as *mut _, 0) } == 0 {
-                        context_is_finished = true;
-                    }
                 }
             }
         }

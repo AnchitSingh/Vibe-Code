@@ -62,3 +62,5 @@ pub use types::NodeError;
 /// - `IoOp`: Defines high-level asynchronous I/O operations.
 /// - `IoOutput`: Represents the successful results of I/O operations.
 pub use io::{IoOp, IoOutput};
+pub mod vibe;
+pub use vibe::{VibeSystem, Job, collect};
