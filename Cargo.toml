@@ -13,10 +13,14 @@ serde_json = "1.0.82"
 sha2 = "0.10.8"
 
 [[example]]
-name = "test_harness"
-path = "bin/test_harness.rs"
-crate-type = ["rlib", "cdylib"]
+name="test_harness"
+path="./bin/test_harness.rs"
 
 [lib]
 crate-type = ["rlib", "cdylib"]
 
+[profile.release]
+strip = true
+lto = "fat"
+codegen-units = 1
+opt-level = 3
