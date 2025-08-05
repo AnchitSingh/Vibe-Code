@@ -1,4 +1,4 @@
-//! Implements `OmegaQueue`, a bounded, thread-safe queue for managing tasks within an `OmegaNode`.
+//! Implements `VibeQueue`, a bounded, thread-safe queue for managing tasks within an `VibeNode`.
 //!
 //! This module provides the core queueing mechanism, including error handling for
 //! queue-specific operations and logic for signaling node overload/idle states
@@ -15,7 +15,7 @@ use std::sync::{
 };
 
 // --- QueueError ---
-/// Represents errors that can occur during `OmegaQueue` operations.
+/// Represents errors that can occur during `VibeQueue` operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueueError {
     /// The queue has reached its maximum capacity and cannot accept more items.
@@ -42,16 +42,16 @@ impl fmt::Display for QueueError {
 
 impl std::error::Error for QueueError {}
 
-// --- OmegaQueue ---
+// --- VibeQueue ---
 /// A bounded, thread-safe queue for holding items of type `T`.
 ///
-/// `OmegaQueue` is designed to manage task backpressure within an `OmegaNode`.
+/// `VibeQueue` is designed to manage task backpressure within an `VibeNode`.
 /// It supports configurable high and low watermarks to signal `NodeOverloaded`
 /// and `NodeIdle` events, respectively, to a central system component.
-pub struct OmegaQueue<T> {
+pub struct VibeQueue<T> {
     /// The unique identifier for this queue.
     id: QueueId,
-    /// The ID of the `OmegaNode` this queue belongs to.
+    /// The ID of the `VibeNode` this queue belongs to.
     node_id: NodeId,
     /// The underlying `VecDeque` protected by a `Mutex` for thread-safe access.
     tasks: Arc<Mutex<VecDeque<T>>>,
@@ -70,10 +70,10 @@ pub struct OmegaQueue<T> {
     is_closed: Arc<AtomicBool>,
 }
 
-impl<T> fmt::Debug for OmegaQueue<T> {
-    /// Implements the `Debug` trait for `OmegaQueue`, providing a concise representation.
+impl<T> fmt::Debug for VibeQueue<T> {
+    /// Implements the `Debug` trait for `VibeQueue`, providing a concise representation.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OmegaQueue")
+        f.debug_struct("VibeQueue")
             .field("id", &self.id)
             .field("node_id", &self.node_id)
             .field("capacity", &self.capacity)
@@ -83,8 +83,8 @@ impl<T> fmt::Debug for OmegaQueue<T> {
     }
 }
 
-/// Generic methods for any `OmegaQueue<T>` regardless of the inner type `T`.
-impl<T> OmegaQueue<T> {
+/// Generic methods for any `VibeQueue<T>` regardless of the inner type `T`.
+impl<T> VibeQueue<T> {
     /// Returns the current number of items in the queue.
     pub fn len(&self) -> usize {
         self.tasks
@@ -126,17 +126,17 @@ impl<T> OmegaQueue<T> {
     }
 }
 
-/// Specific methods for `OmegaQueue` instances holding `Task` structs.
+/// Specific methods for `VibeQueue` instances holding `Task` structs.
 ///
 /// This block includes constructors and methods for enqueueing and dequeuing
 /// `Task`s, with integrated logic for sending `SystemSignal`s based on
 /// queue watermarks.
-impl OmegaQueue<Task> {
-    /// Creates a new `OmegaQueue` for `Task`s with specified watermarks and a signal sender.
+impl VibeQueue<Task> {
+    /// Creates a new `VibeQueue` for `Task`s with specified watermarks and a signal sender.
     ///
     /// # Arguments
     ///
-    /// * `node_id` - The `NodeId` of the owning `OmegaNode`.
+    /// * `node_id` - The `NodeId` of the owning `VibeNode`.
     /// * `capacity` - The maximum number of tasks the queue can hold.
     /// * `low_watermark_percentage` - The percentage (0.0 to 1.0) at which to signal `NodeIdle`.
     /// * `high_watermark_percentage` - The percentage (0.0 to 1.0) at which to signal `NodeOverloaded`.
@@ -153,7 +153,7 @@ impl OmegaQueue<Task> {
         signal_tx: mpsc::Sender<SystemSignal>,
     ) -> Self {
         if capacity == 0 {
-            panic!("OmegaQueue capacity cannot be 0");
+            panic!("VibeQueue capacity cannot be 0");
         }
         if !(0.0 < low_watermark_percentage && low_watermark_percentage < high_watermark_percentage)
         {
@@ -165,7 +165,7 @@ impl OmegaQueue<Task> {
             panic!("Invalid high_watermark_percentage");
         }
 
-        OmegaQueue {
+        VibeQueue {
             id: QueueId::new(),
             node_id,
             tasks: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
@@ -178,11 +178,11 @@ impl OmegaQueue<Task> {
         }
     }
 
-    /// Creates a new `OmegaQueue` for `Task`s with default watermark percentages (0.25 and 0.75).
+    /// Creates a new `VibeQueue` for `Task`s with default watermark percentages (0.25 and 0.75).
     ///
     /// # Arguments
     ///
-    /// * `node_id` - The `NodeId` of the owning `OmegaNode`.
+    /// * `node_id` - The `NodeId` of the owning `VibeNode`.
     /// * `capacity` - The maximum number of tasks the queue can hold.
     /// * `signal_tx` - A sender for `SystemSignal`s.
     pub fn new_with_signal(
@@ -286,13 +286,13 @@ impl OmegaQueue<Task> {
     }
 }
 
-/// Implements the `Clone` trait for `OmegaQueue`, allowing it to be cheaply cloned.
+/// Implements the `Clone` trait for `VibeQueue`, allowing it to be cheaply cloned.
 ///
-/// Cloning an `OmegaQueue` creates a new handle to the *same* underlying queue
+/// Cloning an `VibeQueue` creates a new handle to the *same* underlying queue
 /// data structure, as `tasks`, `was_overloaded`, and `is_closed` are `Arc`s.
-impl<T> Clone for OmegaQueue<T> {
+impl<T> Clone for VibeQueue<T> {
     fn clone(&self) -> Self {
-        OmegaQueue {
+        VibeQueue {
             id: self.id,
             node_id: self.node_id,
             tasks: Arc::clone(&self.tasks),

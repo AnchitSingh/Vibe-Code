@@ -1,5 +1,5 @@
-//! The `ultra_omega` module provides the core `UltraOmegaSystem` for managing
-//! and executing tasks across a network of `OmegaNode`s.
+//! The `vibe_code` module provides the core `UltraOmegaSystem` for managing
+//! and executing tasks across a network of `VibeNode`s.
 //!
 //! This system integrates CPU-bound task processing with an asynchronous
 //! I/O reactor, offering a robust and scalable solution for concurrent
@@ -11,21 +11,14 @@ pub mod builder; // Re-exported for public use.
 
 // --- Public Re-exports ---
 pub use builder::UltraOmegaBuilder;
-use omega::omega_timer::elapsed_ns;
 
 // --- Internal Imports ---
-use crate::io::reactor::{GlobalReactor, ReactorCommand};
-use crate::io::{IoOp, IoOutput};
-use crate::node::OmegaNode;
+use crate::node::VibeNode;
 use crate::task::{Priority, Task, TaskError, TaskHandle, TaskId};
 use crate::types::NodeError;
-use omega::borrg::{BiasStrategy, OmegaRng};
-use std::io as std_io;
+use crate::utils::{BiasStrategy, VibeRng};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{
-    Arc,
-    atomic::AtomicUsize,
-};
+use std::sync::{Arc, atomic::AtomicUsize};
 use std::thread::{Builder, JoinHandle};
 use std::time::Duration;
 
@@ -37,7 +30,7 @@ use std::time::Duration;
 pub struct SharedSubmitterStats {
     /// The total number of tasks for which submission was attempted.
     pub tasks_attempted_submission: AtomicUsize,
-    /// The number of tasks that were successfully submitted to an `OmegaNode`.
+    /// The number of tasks that were successfully submitted to an `VibeNode`.
     pub tasks_successfully_submitted: AtomicUsize,
     /// The number of tasks that failed submission after reaching the maximum
     /// number of retries, typically due to all chosen nodes being overloaded.
@@ -66,22 +59,18 @@ impl Default for SharedSubmitterStats {
     }
 }
 
-/// The main entry point for the CPU Circulatory System, managing `OmegaNode`s
+/// The main entry point for the Vibe System, managing `VibeNode`s
 /// and an asynchronous I/O reactor.
 ///
 /// `UltraOmegaSystem` is responsible for:
-/// - Holding and managing a collection of `OmegaNode`s.
+/// - Holding and managing a collection of `VibeNode`s.
 /// - Spawning and managing a `GlobalReactor` thread for asynchronous I/O.
 /// - Providing methods for submitting CPU-bound and I/O-bound tasks.
 /// - Implementing a task routing strategy to distribute tasks among nodes.
 /// - Ensuring proper shutdown of all managed components.
 pub struct UltraOmegaSystem {
-    /// A shared reference to the vector of `OmegaNode`s managed by the system.
-    pub nodes: Arc<Vec<Arc<OmegaNode>>>,
-    /// An optional handle to the `GlobalReactor`'s thread, allowing it to be joined on shutdown.
-    reactor_thread: Option<JoinHandle<()>>,
-    /// Sender channel for sending commands to the `GlobalReactor`.
-    reactor_cmd_tx: Sender<ReactorCommand>,
+    /// A shared reference to the vector of `VibeNode`s managed by the system.
+    pub nodes: Arc<Vec<Arc<VibeNode>>>,
 }
 
 impl UltraOmegaSystem {
@@ -92,7 +81,7 @@ impl UltraOmegaSystem {
     /// # Examples
     ///
     /// ```
-    /// use cpu_circulatory_system::ultra_omega::UltraOmegaSystem;
+    /// use cpu_circulatory_system::vibe_code::UltraOmegaSystem;
     ///
     /// let system = UltraOmegaSystem::builder()
     ///     .with_nodes(16)
@@ -111,30 +100,18 @@ impl UltraOmegaSystem {
     ///
     /// # Arguments
     ///
-    /// * `nodes` - A `Vec` of `Arc<OmegaNode>` representing the nodes to be managed by the system.
+    /// * `nodes` - A `Vec` of `Arc<VibeNode>` representing the nodes to be managed by the system.
     ///
     /// # Panics
     ///
     /// Panics if the `GlobalReactor` fails to initialize or its thread fails to spawn.
-    pub(crate) fn new_internal(nodes: Vec<Arc<OmegaNode>>) -> Self {
-        let (reactor_cmd_tx, reactor_cmd_rx) = mpsc::channel();
-
-        let reactor =
-            GlobalReactor::new(reactor_cmd_rx).expect("Failed to initialize Global Reactor");
-
-        let reactor_thread = Builder::new()
-            .name("global-io-reactor".to_string())
-            .spawn(move || reactor.run())
-            .expect("Failed to spawn Global Reactor thread");
-
+    pub(crate) fn new_internal(nodes: Vec<Arc<VibeNode>>) -> Self {
         Self {
             nodes: Arc::new(nodes),
-            reactor_thread: Some(reactor_thread),
-            reactor_cmd_tx,
         }
     }
 
-    /// Submits a CPU-bound task to the system for execution on an `OmegaNode`.
+    /// Submits a CPU-bound task to the system for execution on an `VibeNode`.
     ///
     /// The task will be routed to an available node based on the system's
     /// internal routing strategy. A `TaskHandle` is returned immediately,
@@ -145,7 +122,7 @@ impl UltraOmegaSystem {
     /// * `priority` - The priority of the task (e.g., `Priority::High`, `Priority::Normal`).
     /// * `estimated_cost` - An estimated computational cost of the task, used for scheduling.
     /// * `work_fn` - The closure containing the CPU-bound work to be executed.
-    /// * `rng` - A mutable reference to an `OmegaRng` instance for task routing.
+    /// * `rng` - A mutable reference to an `VibeRng` instance for task routing.
     ///
     /// # Type Parameters
     ///
@@ -161,7 +138,7 @@ impl UltraOmegaSystem {
         priority: Priority,
         estimated_cost: u32,
         work_fn: F,
-        rng: &mut OmegaRng,
+        rng: &mut VibeRng,
     ) -> Result<TaskHandle<Output>, NodeError>
     where
         F: FnOnce() -> Result<Output, TaskError> + Send + 'static,
@@ -176,74 +153,7 @@ impl UltraOmegaSystem {
         Ok(TaskHandle::new(task_id, rx))
     }
 
-    /// Submits a non-blocking I/O operation to the system.
-    ///
-    /// This method immediately returns a `TaskHandle` that will receive the result
-    /// of the I/O operation from the `GlobalReactor`. It works by submitting a
-    /// lightweight "launcher" task to an `OmegaNode` worker, whose only job is to
-    /// delegate the real I/O work to the reactor.
-    ///
-    /// # Arguments
-    ///
-    /// * `io_op` - The `IoOp` representing the I/O operation to perform.
-    /// * `timeout` - An optional `Duration` specifying a timeout for the I/O operation.
-    /// * `rng` - A mutable reference to an `OmegaRng` instance for routing the launcher task.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing a `TaskHandle<IoOutput>` on success, or a `NodeError` if
-    /// the launcher task could not be submitted.
-    pub fn submit_io_task(
-        &self,
-        io_op: IoOp,
-        timeout: Option<Duration>,
-        rng: &mut OmegaRng,
-    ) -> Result<TaskHandle<IoOutput>, NodeError> {
-        // 1. Create the result channel and TaskHandle that will be returned to the client.
-        // The `tx` (sender) part will be given to the Reactor, and the `rx` (receiver)
-        // part will be stored in the handle for the client.
-        let (tx, rx) = mpsc::channel();
-        let task_id = TaskId::new(); // A unique ID for this I/O operation.
-
-        // println!("Hello jii {}",elapsed_ns());
-        // 2. Create the command that the launcher task will send to the Reactor.
-        // This command bundles the I/O operation details and the result sender.
-        let command = ReactorCommand::SubmitIoOp {
-            op: io_op,
-            task_id,
-            result_tx: tx,
-            timeout,
-        };
-
-        // 3. Create the simple, fire-and-forget "launcher" work function.
-        // Its only job is to send the command to the reactor.
-        let reactor_tx_clone = self.reactor_cmd_tx.clone();
-        let launcher_work_fn = move || -> Result<(), TaskError> {
-            reactor_tx_clone.send(command).map_err(|e| {
-                // If this send fails, the Reactor is likely dead. This is a critical system error.
-                TaskError::ExecutionFailed(Box::new(std_io::Error::new(
-                    std_io::ErrorKind::BrokenPipe,
-                    format!("Failed to send command to I/O reactor: {}", e),
-                )))
-            })?;
-            // The launcher's "work" is done. It successfully delegated to the reactor.
-            Ok(())
-        };
-
-        // 4. Submit the launcher function as a high-priority, low-cost CPU task.
-        // We use a dummy channel for the launcher's own result, as we don't care about it.
-        let (dummy_tx, _dummy_rx) = mpsc::channel();
-        let launcher_task = Task::new_for_cpu(Priority::High, 1, launcher_work_fn, dummy_tx);
-
-        // Route this lightweight launcher task to an OmegaNode.
-        self.route_task(launcher_task, rng)?;
-
-        // 5. Immediately return the handle to the client. The client will use this handle
-        // to await the result from the Reactor, not from the launcher task.
-        Ok(TaskHandle::new(task_id, rx))
-    }
-
-    /// Internal routing logic for submitting a task to an `OmegaNode` using a
+    /// Internal routing logic for submitting a task to an `VibeNode` using a
     /// "Power of K Choices" strategy.
     ///
     /// This method attempts to find the least pressured node among a randomly
@@ -253,14 +163,14 @@ impl UltraOmegaSystem {
     /// # Arguments
     ///
     /// * `task` - The `Task` to be routed.
-    /// * `rng` - A mutable reference to an `OmegaRng` instance for random node selection.
+    /// * `rng` - A mutable reference to an `VibeRng` instance for random node selection.
     ///
     /// # Returns
     ///
     /// A `Result` indicating success (`Ok(())`) if the task was submitted, or a
     /// `NodeError` if no node could accept the task (e.g., `NodeError::NoNodesAvailable`,
     /// `NodeError::SystemMaxedOut`).
-    fn route_task(&self, task: Task, rng: &mut OmegaRng) -> Result<(), NodeError> {
+    fn route_task(&self, task: Task, rng: &mut VibeRng) -> Result<(), NodeError> {
         let n_total_nodes = self.nodes.len();
         if n_total_nodes == 0 {
             return Err(NodeError::NoNodesAvailable);
@@ -376,16 +286,12 @@ impl UltraOmegaSystem {
         Err(NodeError::SystemMaxedOut)
     }
 
-    /// Shuts down all `OmegaNode`s and the `GlobalReactor` in the system.
+    /// Shuts down all `VibeNode`s and the `GlobalReactor` in the system.
     ///
     /// This method sends shutdown signals to all components, ensuring a graceful
     /// termination of all worker threads and the I/O reactor.
     pub fn shutdown_all(&self) {
-        // Send shutdown command to the GlobalReactor.
-        // The `send` can fail if the reactor has already terminated, which is fine.
-        let _ = self.reactor_cmd_tx.send(ReactorCommand::Shutdown);
-
-        // Shutdown OmegaNodes.
+        // Shutdown VibeNodes.
         for node in self.nodes.iter() {
             node.shutdown();
         }
@@ -395,22 +301,11 @@ impl UltraOmegaSystem {
 /// Implements the `Drop` trait for `UltraOmegaSystem` to ensure proper shutdown
 /// when the system goes out of scope.
 ///
-/// This ensures that the `GlobalReactor` thread is joined and all `OmegaNode`s
+/// This ensures that the `GlobalReactor` thread is joined and all `VibeNode`s
 /// are shut down, preventing resource leaks and ensuring a clean exit.
 impl Drop for UltraOmegaSystem {
     fn drop(&mut self) {
-        // Send shutdown command to the GlobalReactor.
-        // The `send` can fail if the reactor has already terminated, which is fine.
-        let _ = self.reactor_cmd_tx.send(ReactorCommand::Shutdown);
-
-        // Wait for the reactor thread to finish.
-        // `self.reactor_thread.take()` is used to move the `JoinHandle` out of the `Option`
-        // so that `join()` can consume it.
-        if let Some(handle) = self.reactor_thread.take() {
-            let _ = handle.join();
-        }
-
-        // Shutdown OmegaNodes.
+        // Shutdown VibeNodes.
         for node in self.nodes.iter() {
             node.shutdown();
         }

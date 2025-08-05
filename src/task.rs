@@ -2,7 +2,7 @@
 //! and the `TaskHandle` for retrieving task results.
 //!
 //! This module provides the fundamental building blocks for defining and managing
-//! units of work within the CPU Circulatory System.
+//! units of work within the Vibe System.
 
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -80,8 +80,8 @@ impl fmt::Display for TaskError {
     /// Implements the `Display` trait for `TaskError`, providing human-readable error messages.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TaskError::Panicked(msg) => write!(f, "Task panicked: {}", msg),
-            TaskError::ExecutionFailed(err) => write!(f, "Task execution failed: {}", err),
+            TaskError::Panicked(msg) => write!(f, "Task panicked: {msg}"),
+            TaskError::ExecutionFailed(err) => write!(f, "Task execution failed: {err}"),
             TaskError::TimedOut => write!(f, "Operation timed out"),
         }
     }
@@ -172,7 +172,7 @@ impl<Output> TaskHandle<Output> {
 }
 
 // --- TaskExecutionOutcome ---
-/// An internal enum used by an `OmegaNode` worker to know the outcome of a task's
+/// An internal enum used by an `VibeNode` worker to know the outcome of a task's
 /// execution, separate from the actual result data.
 ///
 /// This is used for internal logging, metrics, and potential future features
@@ -193,7 +193,7 @@ pub enum TaskExecutionOutcome {
 }
 
 // --- Task ---
-/// Represents a unit of work to be processed by an `OmegaNode`.
+/// Represents a unit of work to be processed by an `VibeNode`.
 ///
 /// This struct is non-generic and encapsulates the task's metadata (ID, priority, cost)
 /// and a type-erased runnable closure. The closure handles the execution of the
@@ -214,7 +214,7 @@ pub struct Task {
 impl Task {
     /// Creates a new CPU-bound task.
     ///
-    /// This is the primary constructor for tasks that will be executed by `OmegaNode` workers.
+    /// This is the primary constructor for tasks that will be executed by `VibeNode` workers.
     /// It wraps the user's provided work function (`work_fn`) in an internal closure that
     /// handles result/error passing, panic catching, and returning an internal outcome.
     ///
@@ -282,7 +282,7 @@ impl Task {
 
     /// Executes the task's internal runnable closure.
     ///
-    /// This method is called by the `OmegaNode` worker thread.
+    /// This method is called by the `VibeNode` worker thread.
     ///
     /// # Returns
     ///

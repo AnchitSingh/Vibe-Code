@@ -15,7 +15,7 @@ No threads, no channels, no complexity. Just run your stuff in parallel and get 
 ### Basic Parallel Work
 
 ```rust
-use ultra_omega::VibeSystem;
+use vibe_code::VibeSystem;
 
 let system = VibeSystem::new();
 
@@ -62,7 +62,7 @@ let jobs = vec![
 ];
 
 // Wait for everything to finish
-let results = ultra_omega::collect(jobs);
+let results = vibe_code::collect(jobs);
 println!("Processed {} items", results.len());
 ```
 
@@ -79,7 +79,7 @@ let frame_jobs: Vec<_> = video_frames
     .collect();
 
 // Get all processed frames
-let filtered_frames = ultra_omega::collect(frame_jobs);
+let filtered_frames = vibe_code::collect(frame_jobs);
 ```
 
 ### Web Scraping
@@ -93,7 +93,7 @@ let jobs = vec![
     system.run(scrape_website, "https://site3.com"),
 ];
 
-let scraped_data = ultra_omega::collect(jobs);
+let scraped_data = vibe_code::collect(jobs);
 ```
 
 ### File Compression
@@ -135,7 +135,7 @@ loop {
 Add to your `Cargo.toml`:
 ```toml
 [dependencies]
-ultra_omega = { path = "../path/to/ultra_omega" }
+vibe_code = { path = "../path/to/vibe_code" }
 ```
 
 That's it. No configuration needed.
@@ -160,7 +160,7 @@ That's it. No configuration needed.
 - `socket.try_message()` - Check for message (doesn't block)
 
 ### Utilities
-- `ultra_omega::collect(jobs)` - Wait for all jobs to finish
+- `vibe_code::collect(jobs)` - Wait for all jobs to finish
 
 ## 🚨 Error Handling
 
@@ -219,11 +219,11 @@ let jobs: Vec<_> = big_list
     .into_iter()
     .map(|item| system.run(process, item))
     .collect();
-let results = ultra_omega::collect(jobs);  // Fast, all at once
+let results = vibe_code::collect(jobs);  // Fast, all at once
 ```
 
 **Same code, way faster. No complexity.** That's the vibe. 🚀
 
 ---
 
-*Built with the Ultra Omega CPU Circulatory System - a biological approach to parallel computing.*
+*Built with the Ultra Omega Vibe System - a biological approach to parallel computing.*

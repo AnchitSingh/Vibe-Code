@@ -1,14 +1,14 @@
-//! Defines the `OmegaNode`, a core processing unit within the CPU Circulatory System.
+//! Defines the `VibeNode`, a core processing unit within the Vibe System.
 //!
-//! An `OmegaNode` manages a task queue and a pool of worker threads to execute
+//! An `VibeNode` manages a task queue and a pool of worker threads to execute
 //! CPU-bound tasks. It implements dynamic thread scaling based on queue pressure
 //! and communicates its state (e.g., overload, idle) via `SystemSignal`s.
 
-use crate::queue::{OmegaQueue, QueueError};
+use crate::queue::{QueueError, VibeQueue};
 use crate::signals::{NodeId, SystemSignal};
 use crate::task::{Task, TaskExecutionOutcome};
 use crate::types::{LocalStats, NodeError};
-use omega::omega_timer::elapsed_ns;
+use crate::utils::elapsed_ns;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -17,7 +17,7 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-/// Represents the current pressure level of an `OmegaNode`'s task queue.
+/// Represents the current pressure level of an `VibeNode`'s task queue.
 ///
 /// This enum provides a qualitative measure of how busy a node is,
 /// based on its queue length relative to its capacity.
@@ -35,16 +35,16 @@ pub enum PressureLevel {
     Full,
 }
 
-/// An `OmegaNode` is a processing unit responsible for executing tasks.
+/// An `VibeNode` is a processing unit responsible for executing tasks.
 ///
 /// Each node maintains its own task queue and a pool of worker threads.
 /// It dynamically scales its worker threads based on the current queue pressure
 /// and reports its state to the `UltraOmegaSystem` via `SystemSignal`s.
-pub struct OmegaNode {
+pub struct VibeNode {
     /// The unique identifier for this node.
     pub node_id: NodeId,
     /// The queue where tasks are submitted to this node.
-    pub task_queue: OmegaQueue<Task>,
+    pub task_queue: VibeQueue<Task>,
     /// A collection of `JoinHandle`s for the worker threads managed by this node.
     worker_threads_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
     /// Atomic counter for the number of currently active worker threads.
@@ -71,8 +71,8 @@ pub struct OmegaNode {
     pressure: Arc<AtomicUsize>,
 }
 
-impl OmegaNode {
-    /// Creates a new `OmegaNode` instance.
+impl VibeNode {
+    /// Creates a new `VibeNode` instance.
     ///
     /// Initializes the node with a task queue, sets up thread limits,
     /// and spawns the minimum number of worker threads.
@@ -88,7 +88,7 @@ impl OmegaNode {
     ///
     /// # Returns
     ///
-    /// A `Result` containing the initialized `OmegaNode` on success, or a `String` error
+    /// A `Result` containing the initialized `VibeNode` on success, or a `String` error
     /// if `min_threads` is zero or `max_threads` is less than `min_threads`.
     pub fn new(
         node_id: NodeId,
@@ -105,7 +105,7 @@ impl OmegaNode {
             return Err("max_threads cannot be less than min_threads".to_string());
         }
 
-        let task_queue = OmegaQueue::new_with_signal(node_id, queue_capacity, signal_tx.clone());
+        let task_queue = VibeQueue::new_with_signal(node_id, queue_capacity, signal_tx.clone());
         let pressure_arc = Arc::new(AtomicUsize::new(0));
         const NANOS_PER_SEC: u64 = 1_000_000_000;
 
@@ -201,9 +201,15 @@ impl OmegaNode {
             .store(self.active_threads(), Ordering::SeqCst);
 
         let now = elapsed_ns();
-        *self.last_scaling_time.lock().expect("Mutex should not be poisoned") = now;
+        *self
+            .last_scaling_time
+            .lock()
+            .expect("Mutex should not be poisoned") = now;
         if triggered_by_overload {
-            *self.last_self_overload_time.lock().expect("Mutex should not be poisoned") = now;
+            *self
+                .last_self_overload_time
+                .lock()
+                .expect("Mutex should not be poisoned") = now;
         }
 
         self.update_pressure(); // Update pressure after spawning a new thread
@@ -218,10 +224,13 @@ impl OmegaNode {
             .spawn(move || worker_context.run_loop())
             .expect("Failed to spawn worker thread");
 
-        self.worker_threads_handles.lock().expect("Mutex should not be poisoned").push(handle);
+        self.worker_threads_handles
+            .lock()
+            .expect("Mutex should not be poisoned")
+            .push(handle);
     }
 
-    /// Submits a `Task` to this `OmegaNode`'s task queue.
+    /// Submits a `Task` to this `VibeNode`'s task queue.
     ///
     /// This is the internal method called by `UltraOmegaSystem` to route tasks.
     /// It updates local statistics and may trigger worker thread spawning if the
@@ -253,7 +262,10 @@ impl OmegaNode {
             }
             Err(QueueError::Full) => {
                 // If queue is full, record overload time and try to spawn a worker.
-                *self.last_self_overload_time.lock().expect("Mutex should not be poisoned") = elapsed_ns();
+                *self
+                    .last_self_overload_time
+                    .lock()
+                    .expect("Mutex should not be poisoned") = elapsed_ns();
                 self.spawn_worker_thread(true);
                 Err(NodeError::QueueFull)
             }
@@ -261,7 +273,7 @@ impl OmegaNode {
         }
     }
 
-    /// Initiates the shutdown process for the `OmegaNode`.
+    /// Initiates the shutdown process for the `VibeNode`.
     ///
     /// This closes the task queue, sets the desired thread count to zero,
     /// and waits for all worker threads to complete their current tasks and exit.
@@ -274,7 +286,10 @@ impl OmegaNode {
         {
             self.task_queue.close(); // Close the queue to prevent new tasks
             self.desired_thread_count.store(0, Ordering::SeqCst); // Signal workers to exit
-            let mut workers = self.worker_threads_handles.lock().expect("Mutex should not be poisoned");
+            let mut workers = self
+                .worker_threads_handles
+                .lock()
+                .expect("Mutex should not be poisoned");
             for handle in workers.drain(..) {
                 let _ = handle.join(); // Wait for each worker thread to finish
             }
@@ -320,7 +335,7 @@ impl OmegaNode {
 }
 
 // --- WorkerContext ---
-/// Contextual data and methods for an individual worker thread within an `OmegaNode`.
+/// Contextual data and methods for an individual worker thread within an `VibeNode`.
 ///
 /// Each worker thread receives a clone of this context, allowing it to interact
 /// with the node's shared resources (queue, atomics, signals) and execute tasks.
@@ -330,7 +345,7 @@ struct WorkerContext {
     desired_thread_count: Arc<AtomicUsize>,
     min_threads: usize,
     max_threads: usize,
-    task_queue: OmegaQueue<Task>,
+    task_queue: VibeQueue<Task>,
     last_scaling_time: Arc<Mutex<u64>>,
     last_self_overload_time: Arc<Mutex<u64>>,
     scale_down_cooldown: u64,
@@ -433,8 +448,14 @@ impl WorkerContext {
         }
 
         let now = elapsed_ns();
-        let last_scale_time = *self.last_scaling_time.lock().expect("Mutex should not be poisoned");
-        let last_overload_time = *self.last_self_overload_time.lock().expect("Mutex should not be poisoned");
+        let last_scale_time = *self
+            .last_scaling_time
+            .lock()
+            .expect("Mutex should not be poisoned");
+        let last_overload_time = *self
+            .last_self_overload_time
+            .lock()
+            .expect("Mutex should not be poisoned");
 
         // Enforce cooldown periods for scaling down.
         if now.saturating_sub(last_scale_time) < self.scale_down_cooldown {
@@ -459,7 +480,10 @@ impl WorkerContext {
                 )
                 .is_ok()
         {
-            *self.last_scaling_time.lock().expect("Mutex should not be poisoned") = now; // Update last scaling time
+            *self
+                .last_scaling_time
+                .lock()
+                .expect("Mutex should not be poisoned") = now; // Update last scaling time
         }
     }
 
@@ -491,7 +515,10 @@ impl WorkerContext {
             )
             .is_ok()
         {
-            *self.last_scaling_time.lock().expect("Mutex should not be poisoned") = elapsed_ns(); // Update last scaling time
+            *self
+                .last_scaling_time
+                .lock()
+                .expect("Mutex should not be poisoned") = elapsed_ns(); // Update last scaling time
             self.update_pressure_from_context(); // Update pressure after retirement
             true
         } else {
@@ -548,8 +575,8 @@ impl WorkerContext {
     }
 }
 
-impl Drop for OmegaNode {
-    /// Ensures that the `OmegaNode` is properly shut down when it goes out of scope.
+impl Drop for VibeNode {
+    /// Ensures that the `VibeNode` is properly shut down when it goes out of scope.
     ///
     /// This prevents resource leaks by calling the `shutdown` method if it hasn't
     /// been called already.
@@ -563,7 +590,7 @@ impl Drop for OmegaNode {
 impl From<QueueError> for NodeError {
     /// Converts a `QueueError` into a `NodeError`.
     ///
-    /// This allows `QueueError`s originating from the `OmegaQueue` to be
+    /// This allows `QueueError`s originating from the `VibeQueue` to be
     /// propagated as `NodeError`s.
     fn from(qe: QueueError) -> Self {
         match qe {

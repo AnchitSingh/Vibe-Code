@@ -4,17 +4,17 @@
 //! configurable creation of an `UltraOmegaSystem` with specified numbers
 //! of normal and super nodes.
 
-use crate::node::OmegaNode;
+use crate::node::VibeNode;
 use crate::signals::NodeId;
 use crate::signals::SystemSignal;
-use crate::ultra_omega::UltraOmegaSystem;
+use crate::vibe_code::UltraOmegaSystem;
 use std::sync::{Arc, mpsc};
 
-/// Default number of normal `OmegaNode`s if not specified.
-const DEFAULT_NUM_NODES: usize = 8;
+/// Default number of normal `VibeNode`s if not specified.
+const DEFAULT_NUM_NODES: usize = 80;
 /// Default number of "super nodes" if not specified.
 /// Super nodes are configured with higher capacity and more threads.
-const DEFAULT_SUPER_NODES: usize = 2;
+const DEFAULT_SUPER_NODES: usize = 40;
 
 /// A builder for creating and configuring an `UltraOmegaSystem`.
 ///
@@ -25,7 +25,7 @@ const DEFAULT_SUPER_NODES: usize = 2;
 /// # Examples
 ///
 /// ```
-/// use cpu_circulatory_system::ultra_omega::UltraOmegaSystem;
+/// use cpu_circulatory_system::vibe_code::UltraOmegaSystem;
 ///
 /// let system = UltraOmegaSystem::builder()
 ///     .with_nodes(10)
@@ -35,17 +35,10 @@ const DEFAULT_SUPER_NODES: usize = 2;
 /// ```
 #[derive(Default)]
 pub struct UltraOmegaBuilder {
-    /// Optional total number of `OmegaNode`s to create.
+    /// Optional total number of `VibeNode`s to create.
     num_nodes: Option<usize>,
     /// Optional number of "super nodes" to create.
     num_super_nodes: Option<usize>,
-    // Future configuration options can be added here, e.g.:
-    // queue_capacity_normal: Option<usize>,
-    // queue_capacity_super: Option<usize>,
-    // min_threads_normal: Option<usize>,
-    // max_threads_normal: Option<usize>,
-    // min_threads_super: Option<usize>,
-    // max_threads_super: Option<usize>,
 }
 
 impl UltraOmegaBuilder {
@@ -58,7 +51,7 @@ impl UltraOmegaBuilder {
         Self::default()
     }
 
-    /// Sets the total number of `OmegaNode`s for the system.
+    /// Sets the total number of `VibeNode`s for the system.
     ///
     /// # Arguments
     ///
@@ -74,7 +67,7 @@ impl UltraOmegaBuilder {
 
     /// Sets the number of "super nodes" within the total node count.
     ///
-    /// Super nodes are `OmegaNode`s configured with higher task queue capacity
+    /// Super nodes are `VibeNode`s configured with higher task queue capacity
     /// and a larger thread pool compared to normal nodes.
     ///
     /// # Arguments
@@ -93,7 +86,7 @@ impl UltraOmegaBuilder {
     ///
     /// This method applies the configured settings or falls back to
     /// predefined default values for `num_nodes` and `num_super_nodes`.
-    /// It initializes the `OmegaNode`s with appropriate capacities and
+    /// It initializes the `VibeNode`s with appropriate capacities and
     /// thread counts based on whether they are normal or super nodes.
     ///
     /// # Panics
@@ -115,8 +108,8 @@ impl UltraOmegaBuilder {
         // Create a channel for system-wide signals. The receiver is currently unused.
         let (signal_tx, _signal_rx) = mpsc::channel::<SystemSignal>();
 
-        // Initialize the vector of OmegaNodes based on configuration.
-        let nodes_vec: Vec<Arc<OmegaNode>> = {
+        // Initialize the vector of VibeNodes based on configuration.
+        let nodes_vec: Vec<Arc<VibeNode>> = {
             let mut local_nodes_vec = Vec::with_capacity(num_nodes);
             for i in 0..num_nodes {
                 // Determine node configuration (queue capacity, min/max threads)
@@ -129,9 +122,9 @@ impl UltraOmegaBuilder {
                     (10, 1, 4)
                 };
 
-                // Create and store the OmegaNode.
+                // Create and store the VibeNode.
                 let node = Arc::new(
-                    OmegaNode::new(
+                    VibeNode::new(
                         NodeId::new(),
                         queue_cap,
                         min_thr,
@@ -139,7 +132,7 @@ impl UltraOmegaBuilder {
                         signal_tx.clone(),
                         None, // No specific event handler for now.
                     )
-                    .expect("Failed to create OmegaNode"),
+                    .expect("Failed to create VibeNode"),
                 );
                 local_nodes_vec.push(node);
             }

@@ -1,5 +1,5 @@
 //! Defines various identifiers and system-wide signals used for inter-component communication
-//! within the CPU Circulatory System.
+//! within the Vibe System.
 //!
 //! This module provides unique ID types for nodes and queues, and an enumeration
 //! of `SystemSignal`s that convey important operational events across the system.
@@ -9,7 +9,7 @@ use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 // --- NodeId ---
-/// A unique, monotonic identifier for an `OmegaNode` instance.
+/// A unique, monotonic identifier for an `VibeNode` instance.
 ///
 /// Used to distinguish individual nodes within the system for logging,
 /// monitoring, and routing purposes.
@@ -44,7 +44,7 @@ impl fmt::Display for NodeId {
 }
 
 // --- QueueId ---
-/// A unique, monotonic identifier for a task queue within an `OmegaNode`.
+/// A unique, monotonic identifier for a task queue within an `VibeNode`.
 ///
 /// Used to distinguish different queues (e.g., priority queues) within a node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -79,9 +79,9 @@ impl fmt::Display for QueueId {
 
 // --- SystemSignal ---
 /// Signals exchanged within the Ultra-Ω system, focusing on operational lifecycle
-/// and state changes of `OmegaNode`s and tasks.
+/// and state changes of `VibeNode`s and tasks.
 ///
-/// These signals are typically sent from `OmegaNode`s to a central system
+/// These signals are typically sent from `VibeNode`s to a central system
 /// component (e.g., a supervisor or load balancer) to provide real-time
 /// operational feedback.
 #[derive(Debug, Clone)]

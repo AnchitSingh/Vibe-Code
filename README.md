@@ -1,566 +1,208 @@
-Keep the number of workers more than the number of submitters;
-System is infinetly scalable;
+# 🚀 VibeSystem - Brain-Dead Simple Parallelism for Rust
 
-we are testing wrong metric; we have set iteration from 0 to 20; we should be testing how much ops does TCP vs OVP do in 2 seconds:
+**For coders who just want things to work fast.**
 
-Test comand `cargo build --release --bin test-harness --features="test-harness-deps" && sudo ./target/release/test-harness`
+No threads, no channels, no complexity. Just run your functions in parallel and get results back. It's like having a team of super-fast workers who handle all the hard stuff for you.
 
+## ✨ What Can You Do?
 
-# ⚡ Ultra Omega - High-Performance CPU Circulatory System
+- **Run heavy calculations in parallel** - compress files, process images, crunch numbers.
+- **Process large batches of data** - without your computer exploding.
+- **Make your code ridiculously fast** - with minimal changes.
 
-**For psycho coders who demand maximum performance and full control.**
+## 🎯 Dead Simple Examples
 
-A biologically-inspired, lock-free, backpressure-aware task execution framework designed for extreme throughput and intelligent load distribution. Handles 90,000+ ops/sec with sub-millisecond latency.
-
-## 🧬 Architecture Overview
-
-### Core Components
-
-- **UltraOmegaSystem**: Central orchestrator managing node pools and I/O reactor
-- **OmegaNode**: Individual processing units with adaptive thread scaling
-- **OmegaQueue**: Lock-free, bounded queues with watermark-based backpressure
-- **GlobalReactor**: Asynchronous I/O subsystem using Linux epoll
-- **Power-of-K Routing**: Intelligent load balancing with bias strategies
-
-### Biological Inspiration
-
-The system mimics cardiovascular circulation:
-- **Pressure gradients** drive task routing decisions
-- **Vessel dilation/constriction** = dynamic thread scaling
-- **Backpressure propagation** prevents system failure
-- **Separate circulation systems** for CPU and I/O operations
-
-## 🚀 Performance Characteristics
-
-| Metric | Value | Notes |
-|--------|-------|-------|
-| **Peak Throughput** | 90,000+ ops/sec | With optimized configuration |
-| **Latency P99** | <1ms | For CPU-bound tasks |
-| **Thread Overhead** | ~2-8 threads/node | Auto-scaling based on pressure |
-| **Memory Footprint** | ~50MB base | Scales with queue sizes |
-| **I/O Ops** | 10,000+ ops/sec | Network-bound operations |
-
-## ⚙️ Advanced Configuration
-
-### System Builder
+### Basic Parallel Work
 
 ```rust
-use ultra_omega::{UltraOmegaSystem, Priority};
+use vibe_code::VibeSystem;
 
-// High-throughput configuration
-let system = UltraOmegaSystem::builder()
-    .with_nodes(64)           // Total processing nodes
-    .with_super_nodes(32)     // High-capacity nodes (2x queue, 2x threads)
-    .build();
+let system = VibeSystem::new();
 
-// Node characteristics:
-// Regular nodes: queue_cap=10, threads=1-4
-// Super nodes:   queue_cap=20, threads=2-8
+// Run something heavy in the background
+let job1 = system.run(compress_file, my_big_file);
+let job2 = system.run(process_image, my_photo);
+let job3 = system.run(calculate_stuff, my_data);
+
+// Keep doing other things...
+println!("Jobs running in background...");
+
+// Get results when you need them
+let compressed = job1.get();  // Blocks until done
+let processed = job2.get(); 
+let result = job3.get();
 ```
 
-### Performance Tuning
+### Batch Processing
 
 ```rust
-// For CPU-heavy workloads
-let cpu_optimized = UltraOmegaSystem::builder()
-    .with_nodes(num_cpus::get() * 4)
-    .with_super_nodes(num_cpus::get() * 2)
-    .build();
+// Process a bunch of stuff at once
+let jobs = vec![
+    system.run(process_chunk, chunk1),
+    system.run(process_chunk, chunk2),
+    system.run(process_chunk, chunk3),
+    system.run(process_chunk, chunk4),
+    system.run(process_chunk, chunk5),
+];
 
-// For I/O-heavy workloads  
-let io_optimized = UltraOmegaSystem::builder()
-    .with_nodes(16)
-    .with_super_nodes(8)
-    .build();
-
-// For mixed workloads
-let balanced = UltraOmegaSystem::builder()
-    .with_nodes(32)
-    .with_super_nodes(16) 
-    .build();
+// Wait for everything to finish
+let results = vibe_code::collect(jobs);
+println!("Processed {} items", results.len());
 ```
 
-## 🎯 Task Submission API
+## 🎮 Real Examples
 
-### CPU Tasks
-
+### Video Processing
 ```rust
-use omega::borrg::{OmegaRng, BiasStrategy};
+let system = VibeSystem::new();
 
-let mut rng = OmegaRng::new_with_seed(12345);
+// Process video frames in parallel
+let frame_jobs: Vec<_> = video_frames
+    .into_iter()
+    .map(|frame| system.run(apply_filter, frame))
+    .collect();
 
-// High-performance task submission
-let handle = system.submit_cpu_task(
-    Priority::High,           // Task priority (Low, Normal, High)
-    estimated_cost,           // Cost hint for routing (1-100)
-    work_function,            // FnOnce() -> Result<T, TaskError>
-    &mut rng                  // Custom RNG for routing decisions
-)?;
-
-// Advanced work function patterns
-let complex_task = move || -> Result<ProcessedData, TaskError> {
-    // CPU-intensive computation
-    let result = heavy_computation(input_data)?;
-    
-    // Error handling
-    if result.is_invalid() {
-        return Err(TaskError::ExecutionFailed("Validation failed".into()));
-    }
-    
-    Ok(result)
-};
+// Get all processed frames
+let filtered_frames = vibe_code::collect(frame_jobs);
 ```
 
-### I/O Operations
-
+### Web Scraping
 ```rust
-use ultra_omega::io::{IoOp, IoOutput};
-use std::time::Duration;
+let system = VibeSystem::new();
 
-// OVP (Omega Volumetric Protocol) operations
-let handle = system.submit_io_task(
-    IoOp::OvpInit {
-        interface: "eth0".to_string(),
-        my_drone_id: drone_id,
-    },
-    Some(Duration::from_secs(10)),  // Timeout
-    &mut rng
-)?;
+// Scrape multiple websites at once
+let jobs = vec![
+    system.run(scrape_website, "https://site1.com"),
+    system.run(scrape_website, "https://site2.com"),
+    system.run(scrape_website, "https://site3.com"),
+];
 
-// Fire-and-forget messaging
-let emit_handle = system.submit_io_task(
-    IoOp::OvpEmit {
-        socket_token,
-        targets: Some(vec![target_id]),
-        payload: serialized_data,
-    },
-    None,  // No timeout for fire-and-forget
-    &mut rng
-)?;
-
-// Blocking receive with timeout
-let recv_handle = system.submit_io_task(
-    IoOp::OvpReceive { socket_token },
-    Some(Duration::from_millis(500)),
-    &mut rng
-)?;
+let scraped_data = vibe_code::collect(jobs);
 ```
 
-## 📊 Performance Monitoring
-
-### Task Handle Analysis
-
+### File Compression
 ```rust
-use std::time::Instant;
+let system = VibeSystem::new();
 
-let start = Instant::now();
-let handle = system.submit_cpu_task(priority, cost, work, &mut rng)?;
-
-// Monitor execution
-match handle.recv_result() {
-    Ok(Ok(result)) => {
-        let duration = start.elapsed();
-        println!("Task completed in {:?}", duration);
-    }
-    Ok(Err(TaskError::TimedOut)) => {
-        println!("Task timed out - consider increasing timeout");
-    }
-    Ok(Err(TaskError::Panicked(msg))) => {
-        println!("Task panicked: {}", msg);
-    }
-    Ok(Err(TaskError::ExecutionFailed(err))) => {
-        println!("Task failed: {}", err);
-    }
-    Err(_) => {
-        println!("Channel disconnected - system shutdown?");
-    }
+// Compress multiple files simultaneously
+for file in big_files {
+    let job = system.run(compress_file, file);
+    // Fire and forget - compression happens in background
 }
 ```
 
-### System Pressure Monitoring
 
 ```rust
-// Access individual nodes for monitoring
-for (i, node) in system.nodes.iter().enumerate() {
-    let pressure = node.get_pressure();
-    let active_threads = node.active_threads();
-    let desired_threads = node.desired_threads();
-    
-    println!("Node {}: pressure={}%, threads={}/{}", 
-             i, pressure, active_threads, desired_threads);
-    
-    match node.get_pressure_level() {
-        PressureLevel::Empty => println!("  Status: Idle"),
-        PressureLevel::Low => println!("  Status: Light load"),
-        PressureLevel::Normal => println!("  Status: Normal load"),
-        PressureLevel::High => println!("  Status: Heavy load"),
-        PressureLevel::Full => println!("  Status: At capacity"),
-    }
+let system = VibeSystem::new();
+
+// A function that takes data
+fn process_data(id: i32) -> String {
+    thread::sleep(Duration::from_millis(500));
+    format!("Processed #{}", id)
+}
+
+// --- Sequential (Slow) Way ---
+// This would take 10 * 500ms = 5 seconds.
+// for i in 0..10 {
+//     process_data(i);
+// }
+
+// --- VibeSystem (Fast) Way ---
+let start_time = Instant::now();
+
+let jobs: Vec<_> = (0..10)
+    .map(|i| system.run(process_data, i))
+    .collect();
+
+println!("🚀 All 10 jobs submitted instantly.");
+
+// `collect` waits for all jobs to finish and gathers results in order.
+let results = collect(jobs);
+
+let duration = start_time.elapsed();
+println!("📦 All jobs finished!");
+println!("⏱️  Time taken: {:?}. (Much faster than the sequential 5 seconds!)", duration);
+```
+
+## 🔧 Setup
+
+Add this to your `Cargo.toml`:
+```toml
+[dependencies]
+vibe_code = "0.1.0"
+```
+
+Then, add this to the top of your file:
+```rust
+use vibe_code::vibe::{VibeSystem, collect};
+```
+
+That's it. No configuration needed.
+
+## 📚 API Reference
+
+### VibeSystem
+- `VibeSystem::new()` - Creates a new system.
+- `system.run(my_func, data)` - Runs a function with input data in parallel.
+- `system.go(my_func)` - Runs a function with no input data in parallel.
+
+### Job
+- `job.get()` - Waits for the job to finish and returns the result.
+- `job.peek()` - Checks if the job is done without waiting. Returns `Some(result)` or `None`.
+- `job.is_done()` - Returns `true` if the job is finished.
+
+### Utilities
+- `collect(jobs)` - Waits for a `Vec<Job<T>>` to finish and returns a `Vec<T>`.
+
+## 🚨 Error Handling
+
+**There isn't any.** If a function in one of your jobs panics, your whole program will crash with a helpful message:
+
+- `❌ Your job failed! Check your function for bugs.`
+- `❌ Job was cancelled - did you shut down the system?`
+
+This is **by design**. Better to crash early with a clear message than to fail silently and leave you wondering what went wrong.
+
+## 🤔 When NOT to Use This
+
+- **Quick scripts** - just use regular code.
+- **A single, small operation** - no point in parallelizing one thing.
+- **When you need complex error handling** - this library is designed to crash on failure.
+
+## 💡 Philosophy
+
+This library follows the **"vibe coder"** philosophy:
+
+- ✅ **It just works** - no configuration hell.
+- ✅ **Fast by default** - handles thousands of tasks per second.
+- ✅ **Crash with helpful messages** - better than silent failures.
+- ✅ **Zero learning curve** - if you can call a function, you can use this.
+
+You don't need to understand threads, async, channels, or any of that. Just run your code and get results back fast.
+
+## 🎯 Bottom Line
+
+Your slow, sequential code...
+```rust
+// This...
+for item in big_list {
+    process(item);  // Slow, one at a time
 }
 ```
 
-## 🧮 Advanced Routing Strategies
-
-### Power-of-K Selection
-
-The system uses sophisticated routing algorithms:
-
+Becomes this...
 ```rust
-// Internal routing logic (for understanding, not direct usage)
-let k = match n_total_nodes {
-    1 => 1,
-    _ => (2.0f64).max((n_total_nodes as f64).log2().floor()).floor() as usize,
-};
+// Becomes this...
+let jobs: Vec<_> = big_list
+    .into_iter()
+    .map(|item| system.run(process, item))
+    .collect();
 
-// Bias strategies for node selection
-use omega::borrg::BiasStrategy;
-
-// Different bias strategies applied based on attempt:
-// - BiasStrategy::Power(π): Initial attempts favor low-pressure nodes
-// - BiasStrategy::Stepped: Fallback for even distribution  
-// - BiasStrategy::Weighted: Performance-based selection
-// - BiasStrategy::Exponential: Emergency load shedding
+let results = collect(jobs);  // Fast, all at once
 ```
 
-### Custom RNG for Deterministic Routing
-
-```rust
-// Reproducible task distribution
-let mut rng = OmegaRng::new_with_seed(42);
-
-// Batch submission with controlled distribution
-for task in task_batch {
-    let handle = system.submit_cpu_task(
-        Priority::Normal, 
-        task.estimated_cost(),
-        task.work_fn(),
-        &mut rng  // Same RNG ensures consistent routing
-    )?;
-}
-```
-
-## 🔧 Error Handling Strategies
-
-### Backpressure Management
-
-```rust
-use ultra_omega::types::NodeError;
-
-match system.submit_cpu_task(priority, cost, work, &mut rng) {
-    Ok(handle) => { /* Success */ }
-    
-    Err(NodeError::SystemMaxedOut) => {
-        // All nodes at capacity - implement backoff
-        std::thread::sleep(Duration::from_millis(1));
-        // Retry with exponential backoff
-    }
-    
-    Err(NodeError::QueueFull) => {
-        // Specific node queue full - routing will try alternatives
-        // This error is rare due to Power-of-K routing
-    }
-    
-    Err(NodeError::NodeShuttingDown) => {
-        // System is shutting down - stop submitting
-        return Err("System shutdown in progress");
-    }
-    
-    Err(NodeError::NoNodesAvailable) => {
-        // Critical error - system misconfigured
-        panic!("No processing nodes available!");
-    }
-}
-```
-
-### Task Failure Patterns
-
-```rust
-// Robust task execution with retries
-fn execute_with_retry<T>(
-    system: &UltraOmegaSystem,
-    work: impl Fn() -> Result<T, TaskError> + Send + 'static + Clone,
-    max_retries: usize,
-    rng: &mut OmegaRng
-) -> Result<T, TaskError> 
-where T: Send + 'static
-{
-    for attempt in 0..max_retries {
-        let work_clone = work.clone();
-        match system.submit_cpu_task(Priority::Normal, 10, work_clone, rng) {
-            Ok(handle) => {
-                match handle.recv_result() {
-                    Ok(Ok(result)) => return Ok(result),
-                    Ok(Err(TaskError::Panicked(_))) if attempt < max_retries - 1 => {
-                        // Retry panicked tasks
-                        continue;
-                    }
-                    Ok(Err(e)) => return Err(e),
-                    Err(_) => return Err(TaskError::ExecutionFailed("Channel error".into())),
-                }
-            }
-            Err(NodeError::SystemMaxedOut) if attempt < max_retries - 1 => {
-                // Exponential backoff for system overload
-                std::thread::sleep(Duration::from_millis(10 << attempt));
-                continue;
-            }
-            Err(e) => return Err(TaskError::ExecutionFailed(e.to_string().into())),
-        }
-    }
-    Err(TaskError::ExecutionFailed("Max retries exceeded".into()))
-}
-```
-
-## ⚡ High-Frequency Trading Patterns
-
-### Batch Operations
-
-```rust
-// High-throughput batch processing
-fn process_batch<T, R>(
-    system: &UltraOmegaSystem,
-    items: Vec<T>,
-    processor: impl Fn(T) -> Result<R, TaskError> + Send + Sync + 'static,
-    rng: &mut OmegaRng
-) -> Vec<Result<R, TaskError>>
-where
-    T: Send + 'static,
-    R: Send + 'static,
-{
-    let processor = Arc::new(processor);
-    let handles: Vec<_> = items
-        .into_iter()
-        .map(|item| {
-            let proc = Arc::clone(&processor);
-            system.submit_cpu_task(
-                Priority::Normal,
-                5, // Low cost hint for batch items
-                move || proc(item),
-                rng
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .expect("Batch submission failed");
-    
-    handles
-        .into_iter()
-        .map(|handle| {
-            handle.recv_result()
-                .map_err(|_| TaskError::ExecutionFailed("Channel error".into()))
-                .and_then(|r| r)
-        })
-        .collect()
-}
-```
-
-### Pipeline Processing
-
-```rust
-// Multi-stage processing pipeline
-struct Pipeline<T> {
-    system: Arc<UltraOmegaSystem>,
-    rng: OmegaRng,
-    _phantom: PhantomData<T>,
-}
-
-impl<T> Pipeline<T> 
-where T: Send + 'static
-{
-    fn stage1(&mut self, input: T) -> Result<TaskHandle<IntermediateResult>, NodeError> {
-        self.system.submit_cpu_task(
-            Priority::High,
-            20,
-            move || process_stage1(input),
-            &mut self.rng
-        )
-    }
-    
-    fn stage2(&mut self, intermediate: IntermediateResult) -> Result<TaskHandle<FinalResult>, NodeError> {
-        self.system.submit_cpu_task(
-            Priority::Normal,
-            15,
-            move || process_stage2(intermediate),
-            &mut self.rng
-        )
-    }
-    
-    // Chain stages with automatic dependency management
-    fn execute_pipeline(&mut self, input: T) -> Result<FinalResult, TaskError> {
-        let stage1_handle = self.stage1(input)?;
-        let intermediate = stage1_handle.recv_result()??;
-        let stage2_handle = self.stage2(intermediate)?;
-        stage2_handle.recv_result()?
-    }
-}
-```
-
-## 🔍 Memory Management
-
-### Task Lifecycle
-
-```rust
-// Tasks are automatically cleaned up after execution
-// Memory usage patterns:
-
-// 1. Task creation: ~200 bytes per task
-// 2. Queue storage: Bounded by queue capacity
-// 3. Result channels: Cleaned up when TaskHandle is dropped
-// 4. Thread stacks: 2MB per thread (OS default)
-
-// Monitor memory usage
-fn get_memory_stats(system: &UltraOmegaSystem) -> MemoryStats {
-    let total_nodes = system.nodes.len();
-    let total_capacity: usize = system.nodes
-        .iter()
-        .map(|node| node.task_queue.capacity())
-        .sum();
-    
-    let estimated_queue_memory = total_capacity * 200; // bytes per task slot
-    let estimated_thread_memory = system.nodes
-        .iter()
-        .map(|node| node.active_threads() * 2_097_152) // 2MB per thread
-        .sum::<usize>();
-    
-    MemoryStats {
-        queue_memory: estimated_queue_memory,
-        thread_memory: estimated_thread_memory,
-        total_nodes,
-    }
-}
-```
-
-## 🚨 Production Deployment
-
-### Graceful Shutdown
-
-```rust
-// Proper system shutdown
-impl Drop for UltraOmegaSystem {
-    fn drop(&mut self) {
-        // 1. Stop accepting new tasks
-        // 2. Drain existing queues
-        // 3. Join all worker threads
-        // 4. Shutdown I/O reactor
-        self.shutdown_all();
-    }
-}
-
-// Manual shutdown for controlled termination
-system.shutdown_all();
-// All worker threads will complete current tasks and exit
-// New task submissions will return NodeError::NodeShuttingDown
-```
-
-### Signal Monitoring
-
-```rust
-use ultra_omega::signals::SystemSignal;
-
-// Access system signals for monitoring (if exposed)
-// Note: Current API doesn't expose signal receiver publicly
-// This would require extension for production monitoring
-
-// Potential monitoring integration:
-// - Task completion rates
-// - Queue depth metrics  
-// - Thread scaling events
-// - Backpressure incidents
-```
-
-## 📈 Benchmarking
-
-### Performance Testing
-
-```rust
-use std::time::Instant;
-
-fn benchmark_throughput() {
-    let system = UltraOmegaSystem::builder()
-        .with_nodes(64)
-        .with_super_nodes(32)
-        .build();
-    
-    let mut rng = OmegaRng::new();
-    let start = Instant::now();
-    let num_tasks = 100_000;
-    
-    let handles: Vec<_> = (0..num_tasks)
-        .map(|i| {
-            system.submit_cpu_task(
-                Priority::Normal,
-                1, // Minimal cost
-                move || Ok(i * 2), // Trivial computation
-                &mut rng
-            ).expect("Task submission failed")
-        })
-        .collect();
-    
-    // Wait for all completions
-    let results: Vec<_> = handles
-        .into_iter()
-        .map(|h| h.recv_result().unwrap().unwrap())
-        .collect();
-    
-    let duration = start.elapsed();
-    let throughput = num_tasks as f64 / duration.as_secs_f64();
-    
-    println!("Throughput: {:.0} ops/sec", throughput);
-    println!("Latency: {:.2?} per task", duration / num_tasks);
-}
-```
-
-## 🎯 Anti-Patterns
-
-### What NOT to Do
-
-```rust
-// ❌ Don't create new systems repeatedly
-for task in tasks {
-    let system = UltraOmegaSystem::builder().build(); // WRONG!
-    let handle = system.submit_cpu_task(/*...*/);
-}
-
-// ✅ Reuse the same system
-let system = UltraOmegaSystem::builder().build();
-for task in tasks {
-    let handle = system.submit_cpu_task(/*...*/);
-}
-
-// ❌ Don't ignore backpressure errors
-let handle = system.submit_cpu_task(/*...*/).unwrap(); // WRONG!
-
-// ✅ Handle backpressure gracefully
-match system.submit_cpu_task(/*...*/) {
-    Ok(handle) => { /* process */ },
-    Err(NodeError::SystemMaxedOut) => { /* backoff and retry */ },
-    Err(e) => { /* handle other errors */ },
-}
-
-// ❌ Don't use blocking operations in task functions
-let bad_task = || {
-    std::thread::sleep(Duration::from_secs(10)); // BLOCKS WORKER THREAD!
-    Ok(result)
-};
-
-// ✅ Use async I/O or quick computations
-let good_task = || {
-    // Quick CPU work only
-    let result = fast_computation();
-    Ok(result)
-};
-```
-
-## 🏆 Conclusion
-
-The Ultra Omega system provides:
-
-- **Theoretical maximum throughput** limited only by hardware
-- **Intelligent load balancing** via biological inspiration
-- **Graceful degradation** under extreme load
-- **Zero-copy task routing** with lock-free queues
-- **Sub-millisecond latency** for CPU-bound operations
-
-For psycho coders who need every drop of performance, this system delivers enterprise-grade throughput with fine-grained control over execution characteristics.
+**Same logic, way faster. No complexity.** That's the vibe. 🚀
 
 ---
 
-*"In the realm of parallel computing, there are no shortcuts to performance. Only intelligent architecture."*
+*Built with the Vibe System - a biological approach to parallel computing.*

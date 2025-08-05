@@ -1,7 +1,7 @@
-//! Defines common types and error enumerations used throughout the CPU Circulatory System.
+//! Defines common types and error enumerations used throughout the Vibe System.
 //!
 //! This module includes definitions for `NodeError` (representing various errors
-//! that can occur within an `OmegaNode`) and `LocalStats` (for tracking node-specific
+//! that can occur within an `VibeNode`) and `LocalStats` (for tracking node-specific
 //! performance metrics).
 
 use std::collections::VecDeque;
@@ -16,18 +16,18 @@ const ROLLING_WINDOW_TASK_DURATIONS: usize = 100;
 const ROLLING_WINDOW_FAILURES: usize = 50;
 
 // --- NodeError ---
-/// Represents various errors that can occur during `OmegaNode` operations or task submission.
+/// Represents various errors that can occur during `VibeNode` operations or task submission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeError {
-    /// The task queue of an `OmegaNode` is full, and no more tasks can be submitted.
+    /// The task queue of an `VibeNode` is full, and no more tasks can be submitted.
     QueueFull,
-    /// The task queue of an `OmegaNode` has been closed, preventing further submissions.
+    /// The task queue of an `VibeNode` has been closed, preventing further submissions.
     QueueClosed,
-    /// The `OmegaNode` is in the process of shutting down and cannot accept new tasks.
+    /// The `VibeNode` is in the process of shutting down and cannot accept new tasks.
     NodeShuttingDown,
     /// Failed to send a system signal (e.g., `SystemSignal`) from a node.
     SignalSendError,
-    /// No `OmegaNode`s are available in the system to accept a task.
+    /// No `VibeNode`s are available in the system to accept a task.
     NoNodesAvailable,
     /// The system is maxed out; all sampled nodes are at their full pressure capacity,
     /// and no suitable node could be found for task submission after multiple retries.
@@ -43,7 +43,7 @@ impl fmt::Display for NodeError {
             NodeError::NodeShuttingDown => write!(f, "Node is shutting down"),
             NodeError::SignalSendError => write!(f, "Node failed to send a system signal"),
             NodeError::NoNodesAvailable => {
-                write!(f, "No OmegaNodes available for task submission")
+                write!(f, "No VibeNodes available for task submission")
             }
             NodeError::SystemMaxedOut => write!(
                 f,
@@ -56,7 +56,7 @@ impl fmt::Display for NodeError {
 impl std::error::Error for NodeError {}
 
 // --- LocalStats ---
-/// Tracks statistics for an `OmegaNode`, including both all-time and rolling window metrics.
+/// Tracks statistics for an `VibeNode`, including both all-time and rolling window metrics.
 ///
 /// This struct provides insights into the performance and workload of an individual node,
 /// such as task submission rates, processing times, and success/failure rates.
