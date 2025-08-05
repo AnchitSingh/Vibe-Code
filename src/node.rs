@@ -1,8 +1,9 @@
-//! Defines the `VibeNode`, a core processing unit within the Vibe System.
+//! Defines `VibeNode`, a self-contained processing unit.
 //!
-//! An `VibeNode` manages a task queue and a pool of worker threads to execute
-//! CPU-bound tasks. It implements dynamic thread scaling based on queue pressure
-//! and communicates its state (e.g., overload, idle) via `SystemSignal`s.
+//! A `VibeNode` is like a single worker in the system's factory. It has its own
+//! task queue and a pool of threads to execute those tasks. It's designed to be
+//! self-managing, automatically adjusting the number of active threads based on
+//! its current workload (pressure).
 
 use crate::queue::{QueueError, VibeQueue};
 use crate::signals::{NodeId, SystemSignal};
@@ -17,79 +18,62 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-/// Represents the current pressure level of an `VibeNode`'s task queue.
-///
-/// This enum provides a qualitative measure of how busy a node is,
-/// based on its queue length relative to its capacity.
+/// A qualitative measure of a node's current workload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PressureLevel {
-    /// The node's task queue is empty.
+    /// The task queue is empty.
     Empty,
-    /// The node's task queue has a low number of tasks.
+    /// The task queue has a few tasks.
     Low,
-    /// The node's task queue is at a normal, healthy level.
+    /// The task queue is at a healthy, normal level.
     Normal,
-    /// The node's task queue is approaching full capacity, indicating high load.
+    /// The task queue is nearly full, indicating high load.
     High,
-    /// The node's task queue is at or beyond its maximum capacity.
+    /// The task queue is at maximum capacity.
     Full,
 }
 
-/// An `VibeNode` is a processing unit responsible for executing tasks.
+/// A processing unit that executes tasks.
 ///
-/// Each node maintains its own task queue and a pool of worker threads.
-/// It dynamically scales its worker threads based on the current queue pressure
-/// and reports its state to the `UltraOmegaSystem` via `SystemSignal`s.
+/// Each `VibeNode` contains a task queue and a dynamic pool of worker threads.
+/// It reports its status (e.g., overloaded, idle) to the central system, which
+/// helps with load balancing.
 pub struct VibeNode {
-    /// The unique identifier for this node.
+    /// A unique identifier for this node.
     pub node_id: NodeId,
-    /// The queue where tasks are submitted to this node.
+    /// The queue that holds tasks waiting to be executed by this node.
     pub task_queue: VibeQueue<Task>,
-    /// A collection of `JoinHandle`s for the worker threads managed by this node.
+    /// Handles to the worker threads managed by this node.
     worker_threads_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
-    /// Atomic counter for the number of currently active worker threads.
+    /// The number of currently active worker threads.
     active_thread_count: Arc<AtomicUsize>,
-    /// The minimum number of worker threads that should always be running.
+    /// The minimum number of worker threads to keep alive.
     pub min_threads: usize,
     /// The maximum number of worker threads this node can spawn.
     pub max_threads: usize,
-    /// Sender channel for sending `SystemSignal`s to the central system.
+    /// A channel to send signals (like "I'm overloaded!") to the central system.
     signal_tx: mpsc::Sender<SystemSignal>,
-    /// Local statistics tracking for this node's performance.
+    /// Performance statistics for this specific node.
     local_stats: Arc<LocalStats>,
-    /// Atomic flag indicating if the node is in the process of shutting down.
+    /// A flag to indicate that the node is in the process of shutting down.
     is_shutting_down: Arc<AtomicBool>,
-    /// The desired number of worker threads, used for scaling decisions.
+    /// The target number of worker threads, adjusted dynamically based on load.
     desired_thread_count: Arc<AtomicUsize>,
-    /// The last time a scaling operation (up or down) occurred, in nanoseconds.
+    /// The timestamp of the last scaling event (adding or removing a thread).
     last_scaling_time: Arc<Mutex<u64>>,
-    /// The last time this node reported itself as overloaded, in nanoseconds.
+    /// The timestamp of the last time this node's queue was full.
     last_self_overload_time: Arc<Mutex<u64>>,
-    /// Cooldown period (in nanoseconds) before the node can scale down threads.
+    /// A cooldown period to prevent scaling down threads too aggressively.
     pub scale_down_cooldown: u64,
-    /// Atomic representation of the node's current pressure (0-100%).
+    /// A percentage (0-100) representing the current queue load.
     pressure: Arc<AtomicUsize>,
 }
 
 impl VibeNode {
-    /// Creates a new `VibeNode` instance.
+    /// Creates and initializes a new `VibeNode`.
     ///
-    /// Initializes the node with a task queue, sets up thread limits,
-    /// and spawns the minimum number of worker threads.
-    ///
-    /// # Arguments
-    ///
-    /// * `node_id` - The unique identifier for this node.
-    /// * `queue_capacity` - The maximum number of tasks the node's queue can hold.
-    /// * `min_threads` - The minimum number of worker threads to maintain.
-    /// * `max_threads` - The maximum number of worker threads to allow.
-    /// * `signal_tx` - A sender for `SystemSignal`s to communicate with the central system.
-    /// * `scale_down_cooldown_override` - An optional override for the default scale-down cooldown.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing the initialized `VibeNode` on success, or a `String` error
-    /// if `min_threads` is zero or `max_threads` is less than `min_threads`.
+    /// This sets up the task queue, thread limits, and spawns the minimum
+    /// number of worker threads to start processing tasks.
     pub fn new(
         node_id: NodeId,
         queue_capacity: usize,
@@ -121,7 +105,6 @@ impl VibeNode {
             is_shutting_down: Arc::new(AtomicBool::new(false)),
             desired_thread_count: Arc::new(AtomicUsize::new(min_threads)),
             last_scaling_time: Arc::new(Mutex::new(elapsed_ns())),
-            // Initialize last_self_overload_time far in the past to allow immediate scaling up if needed.
             last_self_overload_time: Arc::new(Mutex::new(
                 elapsed_ns().saturating_sub(3600 * NANOS_PER_SEC),
             )),
@@ -129,65 +112,54 @@ impl VibeNode {
             pressure: pressure_arc,
         };
 
-        // Spawn initial worker threads up to `min_threads`.
+        // Spawn the initial set of worker threads.
         for _ in 0..node.min_threads {
             node.spawn_worker_thread(false);
         }
-        node.update_pressure(); // Initial pressure calculation
+        node.update_pressure();
 
         Ok(node)
     }
 
-    /// Calculates and updates the node's current pressure based on queue length and active threads.
-    ///
-    /// Pressure is a value from 0 to 100, representing the percentage of queue capacity utilized,
-    /// potentially influenced by active thread count.
+    /// Calculates and updates the node's pressure based on queue fullness.
     fn update_pressure(&self) {
-        let q = self.task_queue.len() as f64; // Current queue length
-        let c = self.active_thread_count.load(Ordering::Relaxed) as f64; // Active thread count
-        let k = self.task_queue.capacity() as f64; // Queue capacity
+        let q = self.task_queue.len() as f64;
+        let c = self.active_thread_count.load(Ordering::Relaxed) as f64;
+        let k = self.task_queue.capacity() as f64;
 
         let pressure_float = if c > 0.0 && k > 0.0 {
-            (q / k) * 100.0 // Pressure based on queue fill ratio
+            (q / k) * 100.0
         } else if q > 0.0 {
-            100.0 // If queue has tasks but no capacity/threads, consider it full pressure
+            100.0
         } else {
-            0.0 // No tasks, no pressure
+            0.0
         };
         self.pressure
             .store(pressure_float.clamp(0.0, 100.0) as usize, Ordering::Relaxed);
     }
 
-    /// Returns the current pressure of the node (0-100%).
+    /// Returns the current pressure of the node (a percentage from 0 to 100).
     pub fn get_pressure(&self) -> usize {
         self.pressure.load(Ordering::Relaxed)
     }
 
-    /// Returns the maximum possible pressure value (100%).
+    /// Returns the maximum possible pressure value (always 100).
     pub fn max_pressure(&self) -> usize {
         100
     }
 
-    /// Returns the qualitative `PressureLevel` based on the current pressure.
+    /// Returns a qualitative `PressureLevel` based on the current numeric pressure.
     pub fn get_pressure_level(&self) -> PressureLevel {
         match self.get_pressure() {
             0 => PressureLevel::Empty,
             1..=25 => PressureLevel::Low,
             26..=75 => PressureLevel::Normal,
             76..=99 => PressureLevel::High,
-            _ => PressureLevel::Full, // 100%
+            _ => PressureLevel::Full,
         }
     }
 
-    /// Spawns a new worker thread for this node.
-    ///
-    /// A new thread is only spawned if the current active thread count is below
-    /// `max_threads` and the node is not shutting down. It updates scaling times
-    /// and pressure.
-    ///
-    /// # Arguments
-    ///
-    /// * `triggered_by_overload` - `true` if this spawn was a direct response to queue overload.
+    /// Spawns a new worker thread if the node is under load and below its max thread count.
     fn spawn_worker_thread(&self, triggered_by_overload: bool) {
         if self.active_threads() >= self.max_threads {
             return;
@@ -212,12 +184,12 @@ impl VibeNode {
                 .expect("Mutex should not be poisoned") = now;
         }
 
-        self.update_pressure(); // Update pressure after spawning a new thread
+        self.update_pressure();
 
         let worker_context = self.clone_for_worker();
         let handle = thread::Builder::new()
             .name(format!(
-                "omega-node-{}-worker-{}",
+                "vibe-node-{}-worker-{}",
                 self.node_id.0,
                 self.active_threads()
             ))
@@ -230,29 +202,18 @@ impl VibeNode {
             .push(handle);
     }
 
-    /// Submits a `Task` to this `VibeNode`'s task queue.
+    /// Submits a task to this node's queue.
     ///
-    /// This is the internal method called by `UltraOmegaSystem` to route tasks.
-    /// It updates local statistics and may trigger worker thread spawning if the
-    /// queue pressure is high.
-    ///
-    /// # Arguments
-    ///
-    /// * `task` - The `Task` to submit.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` indicating success (`Ok(())`) or a `NodeError` if the node
-    /// is shutting down, the queue is full, or a signal send fails.
+    /// This is an internal method called by the system's task router. It may
+    /// trigger spawning a new worker thread if the queue pressure becomes high.
     pub(crate) fn submit_task(&self, task: Task) -> Result<(), NodeError> {
         if self.is_shutting_down.load(Ordering::Relaxed) {
             return Err(NodeError::NodeShuttingDown);
         }
-        self.local_stats.task_submitted(); // Record task submission
+        self.local_stats.task_submitted();
         match self.task_queue.enqueue(task) {
             Ok(()) => {
                 self.update_pressure();
-                // If pressure is high or full, consider spawning another worker.
                 if self.get_pressure_level() == PressureLevel::High
                     || self.get_pressure_level() == PressureLevel::Full
                 {
@@ -261,7 +222,6 @@ impl VibeNode {
                 Ok(())
             }
             Err(QueueError::Full) => {
-                // If queue is full, record overload time and try to spawn a worker.
                 *self
                     .last_self_overload_time
                     .lock()
@@ -269,37 +229,35 @@ impl VibeNode {
                 self.spawn_worker_thread(true);
                 Err(NodeError::QueueFull)
             }
-            Err(e) => Err(NodeError::from(e)), // Convert other QueueErrors to NodeError
+            Err(e) => Err(NodeError::from(e)),
         }
     }
 
-    /// Initiates the shutdown process for the `VibeNode`.
+    /// Begins the shutdown process for the node.
     ///
-    /// This closes the task queue, sets the desired thread count to zero,
-    /// and waits for all worker threads to complete their current tasks and exit.
+    /// This closes the task queue to new submissions and waits for all existing
+    /// worker threads to finish their current tasks and exit gracefully.
     pub fn shutdown(&self) {
-        // Use compare_exchange to ensure shutdown is only initiated once.
         if self
             .is_shutting_down
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
             .is_ok()
         {
-            self.task_queue.close(); // Close the queue to prevent new tasks
-            self.desired_thread_count.store(0, Ordering::SeqCst); // Signal workers to exit
+            self.task_queue.close();
+            self.desired_thread_count.store(0, Ordering::SeqCst);
             let mut workers = self
                 .worker_threads_handles
                 .lock()
                 .expect("Mutex should not be poisoned");
             for handle in workers.drain(..) {
-                let _ = handle.join(); // Wait for each worker thread to finish
+                let _ = handle.join();
             }
         }
     }
 
-    /// Creates a `WorkerContext` clone for a new worker thread.
+    /// Clones the necessary context for a new worker thread.
     ///
-    /// This method bundles all necessary `Arc`s and immutable data for a worker
-    /// thread to operate independently.
+    /// This bundles all the shared data (`Arc`s) that a worker needs to operate.
     fn clone_for_worker(&self) -> WorkerContext {
         WorkerContext {
             node_id: self.node_id,
@@ -318,7 +276,7 @@ impl VibeNode {
         }
     }
 
-    /// Returns the unique `NodeId` of this node.
+    /// Returns the node's unique ID.
     pub fn id(&self) -> NodeId {
         self.node_id
     }
@@ -334,11 +292,7 @@ impl VibeNode {
     }
 }
 
-// --- WorkerContext ---
-/// Contextual data and methods for an individual worker thread within an `VibeNode`.
-///
-/// Each worker thread receives a clone of this context, allowing it to interact
-/// with the node's shared resources (queue, atomics, signals) and execute tasks.
+/// Contains the shared state and logic for a single worker thread.
 struct WorkerContext {
     node_id: NodeId,
     active_thread_count: Arc<AtomicUsize>,
@@ -356,95 +310,72 @@ struct WorkerContext {
 }
 
 impl WorkerContext {
-    /// The main execution loop for a worker thread.
+    /// The main loop for a worker thread.
     ///
-    /// This loop continuously attempts to dequeue and process tasks.
-    /// It also handles dynamic scaling down of threads and self-retirement
-    /// when the node is idle or over-provisioned.
+    /// The worker continuously pulls tasks from the queue, processes them, and
+    /// checks if it should scale down or retire.
     fn run_loop(self) {
         let mut retired_by_choice = false;
         loop {
-            // Break loop if node is shutting down.
             if self.is_shutting_down.load(Ordering::Relaxed) {
                 break;
             }
 
-            // Attempt to dequeue a task.
             if let Some(task) = self.task_queue.dequeue() {
-                self.update_pressure_from_context(); // Update pressure after dequeue
+                self.update_pressure_from_context();
                 let _ = self.signal_tx.send(SystemSignal::TaskDequeuedByWorker {
                     node_id: self.node_id,
                     task_id: task.id,
                 });
-                self.process_task(task); // Process the dequeued task
+                self.process_task(task);
             } else {
-                // If no task, check for shutdown again.
                 if self.is_shutting_down.load(Ordering::Relaxed) {
                     break;
                 }
 
-                // Consider scaling down if conditions are met.
                 self.consider_scaling_down();
-                // Attempt to retire this worker thread if it's no longer needed.
                 if self.check_and_attempt_self_retirement() {
                     retired_by_choice = true;
-                    break; // Worker successfully retired
+                    break;
                 }
-                // If no task and not retiring, sleep briefly to avoid busy-waiting.
                 thread::sleep(Duration::from_millis(5));
             }
         }
 
-        // If the worker did not retire by choice (i.e., it was forced to shut down),
-        // decrement the active thread count.
         if !retired_by_choice {
             self.active_thread_count.fetch_sub(1, Ordering::SeqCst);
             self.update_pressure_from_context();
         }
     }
 
-    /// Processes a single `Task`.
-    ///
-    /// Executes the task's work function, records its outcome and duration
-    /// in local statistics, and sends a `TaskProcessed` signal.
-    ///
-    /// # Arguments
-    ///
-    /// * `task` - The `Task` to process.
+    /// Executes a single task and records the outcome.
     fn process_task(&self, task: Task) {
         let task_id = task.id;
         let start_time_ns = elapsed_ns();
 
-        // Execute the task's work function.
         let outcome = task.run();
 
         let duration_ns = elapsed_ns().saturating_sub(start_time_ns);
 
-        // Determine if the task was logically successful for local statistics.
         let was_logically_successful = outcome == TaskExecutionOutcome::Success;
         self.local_stats
             .record_task_outcome(duration_ns, was_logically_successful);
 
-        // Always send `TaskProcessed` signal, regardless of the task's logical outcome.
-        // This signal indicates the worker has completed its processing cycle for this task.
         if !self.is_shutting_down.load(Ordering::Relaxed) {
             let signal = SystemSignal::TaskProcessed {
                 node_id: self.node_id,
                 task_id,
-                duration_micros: duration_ns / 1000, // Convert nanoseconds to microseconds
+                duration_micros: duration_ns / 1000,
             };
             let _ = self.signal_tx.send(signal);
         }
     }
 
-    /// Considers whether to scale down the number of desired worker threads.
-    ///
-    /// This method checks if the current desired thread count is above the minimum,
-    /// if cooldown periods have passed, and if the node's pressure is low.
+    /// Checks if the node is idle and if a thread can be scaled down.
     fn consider_scaling_down(&self) {
         let current_desired = self.desired_thread_count.load(Ordering::SeqCst);
         if current_desired <= self.min_threads {
-            return; // Cannot scale down below minimum threads
+            return;
         }
 
         let now = elapsed_ns();
@@ -457,7 +388,6 @@ impl WorkerContext {
             .lock()
             .expect("Mutex should not be poisoned");
 
-        // Enforce cooldown periods for scaling down.
         if now.saturating_sub(last_scale_time) < self.scale_down_cooldown {
             return;
         }
@@ -468,7 +398,6 @@ impl WorkerContext {
         let pressure = self.get_pressure_from_context();
         let pressure_level = self.get_pressure_level_from_pressure(pressure);
 
-        // If pressure is low, attempt to decrement desired thread count.
         if (pressure_level == PressureLevel::Empty || pressure_level == PressureLevel::Low)
             && self
                 .desired_thread_count
@@ -483,28 +412,19 @@ impl WorkerContext {
             *self
                 .last_scaling_time
                 .lock()
-                .expect("Mutex should not be poisoned") = now; // Update last scaling time
+                .expect("Mutex should not be poisoned") = now;
         }
     }
 
-    /// Checks if this worker thread should retire and attempts to decrement the active count.
-    ///
-    /// A worker retires if the active thread count is above the desired count and
-    /// above the minimum, and it successfully decrements the active count.
-    ///
-    /// # Returns
-    ///
-    /// `true` if the worker successfully retired, `false` otherwise.
+    /// Checks if this worker thread is now superfluous and can shut down.
     fn check_and_attempt_self_retirement(&self) -> bool {
         let current_active = self.active_thread_count.load(Ordering::SeqCst);
-        // Retire if active threads are more than minimum AND more than desired.
         if current_active <= self.min_threads
             || current_active <= self.desired_thread_count.load(Ordering::SeqCst)
         {
             return false;
         }
 
-        // Atomically try to decrement active thread count.
         if self
             .active_thread_count
             .compare_exchange(
@@ -518,21 +438,15 @@ impl WorkerContext {
             *self
                 .last_scaling_time
                 .lock()
-                .expect("Mutex should not be poisoned") = elapsed_ns(); // Update last scaling time
-            self.update_pressure_from_context(); // Update pressure after retirement
+                .expect("Mutex should not be poisoned") = elapsed_ns();
+            self.update_pressure_from_context();
             true
         } else {
-            false // Failed to retire (e.g., another thread retired first)
+            false
         }
     }
 
-    /// Calculates the current pressure of the node from the worker's context.
-    ///
-    /// This is a helper for workers to get an up-to-date pressure value.
-    ///
-    /// # Returns
-    ///
-    /// The calculated pressure (0-100%).
+    /// Helper for a worker to calculate the node's current pressure.
     fn get_pressure_from_context(&self) -> usize {
         let q = self.task_queue.len() as f64;
         let c = self.active_thread_count.load(Ordering::Relaxed) as f64;
@@ -547,17 +461,7 @@ impl WorkerContext {
         pressure_float.clamp(0.0, 100.0) as usize
     }
 
-    /// Returns the qualitative `PressureLevel` based on a given pressure value.
-    ///
-    /// This is a helper for workers to interpret pressure.
-    ///
-    /// # Arguments
-    ///
-    /// * `pressure` - The pressure value (0-100%).
-    ///
-    /// # Returns
-    ///
-    /// The corresponding `PressureLevel`.
+    /// Helper to get a `PressureLevel` enum from a numeric pressure value.
     fn get_pressure_level_from_pressure(&self, pressure: usize) -> PressureLevel {
         match pressure {
             0 => PressureLevel::Empty,
@@ -568,7 +472,7 @@ impl WorkerContext {
         }
     }
 
-    /// Updates the shared atomic pressure value of the node from the worker's context.
+    /// Updates the node's shared pressure atomic from the worker's context.
     fn update_pressure_from_context(&self) {
         let pressure = self.get_pressure_from_context();
         self.node_pressure_atomic.store(pressure, Ordering::Relaxed);
@@ -576,10 +480,7 @@ impl WorkerContext {
 }
 
 impl Drop for VibeNode {
-    /// Ensures that the `VibeNode` is properly shut down when it goes out of scope.
-    ///
-    /// This prevents resource leaks by calling the `shutdown` method if it hasn't
-    /// been called already.
+    /// Ensures the node is properly shut down when it goes out of scope.
     fn drop(&mut self) {
         if !self.is_shutting_down.load(Ordering::Relaxed) {
             self.shutdown();
@@ -589,15 +490,12 @@ impl Drop for VibeNode {
 
 impl From<QueueError> for NodeError {
     /// Converts a `QueueError` into a `NodeError`.
-    ///
-    /// This allows `QueueError`s originating from the `VibeQueue` to be
-    /// propagated as `NodeError`s.
     fn from(qe: QueueError) -> Self {
         match qe {
             QueueError::Full => NodeError::QueueFull,
             QueueError::Closed => NodeError::QueueClosed,
             QueueError::SendError => NodeError::SignalSendError,
-            QueueError::Empty => NodeError::QueueClosed, // An empty queue when trying to dequeue from a closed queue
+            QueueError::Empty => NodeError::QueueClosed,
         }
     }
 }

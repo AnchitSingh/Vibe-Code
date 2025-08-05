@@ -1,60 +1,47 @@
-//! The Vibe System is a Rust library designed for efficient and scalable
-//! task management and execution across multiple processing units (nodes).
+//! # VibeSystem: Simple Parallelism for Rust
 //!
-//! It provides a robust framework for submitting, routing, and processing
-//! both CPU-bound and I/O-bound tasks, leveraging asynchronous I/O and
-//! intelligent load balancing strategies.
+//! The `cpu_circulatory_system` library, also known as the VibeSystem, provides an incredibly
+//! simple way to run your code in parallel. It's designed for developers who want to speed
+//! up their applications without getting bogged down in the complexities of manual thread
+//! management, channels, or async runtimes.
 //!
-//! # Features
+//! The core idea is to take a list of tasks and run them all at once, intelligently
+//! distributing them across your CPU cores.
 //!
-//! - **`VibeNode`**: Individual processing units capable of executing tasks.
-//! - **`UltraOmegaSystem`**: The central orchestrator for managing `VibeNode`s
-//!   and routing tasks.
-//! - **Asynchronous I/O**: Integrated `GlobalReactor` for non-blocking network operations.
-//! - **Task Queues**: Efficient, bounded queues for managing task backpressure.
-//! - **Load Balancing**: "Power of K Choices" routing strategy for optimal task distribution.
-//! - **System Signals**: Real-time feedback on node and task states.
-//! - **Builder Pattern**: Flexible system configuration through `UltraOmegaBuilder`.
+//! # Key Components
 //!
-//! # Modules
+//! - **`VibeSystem`**: The main entry point. You create one of these and use it to run your jobs.
+//! - **`Job`**: A handle to a piece of work that is running in the background. You can call
+//!   `.get()` on a `Job` to wait for its result.
+//! - **`collect`**: A helper function to wait for a `Vec<Job<T>>` to finish and get a `Vec<T>` of results.
 //!
-//! - `node`: Defines the `VibeNode` and its worker threads.
-//! - `queue`: Implements the `VibeQueue` for task buffering.
-//! - `signals`: Defines system-wide communication signals and unique identifiers.
-//! - `task`: Defines the `Task` abstraction and `TaskHandle` for result retrieval.
-//! - `types`: Contains common error types and statistical structures.
-//! - `vibe_code`: The main system orchestration logic, including `UltraOmegaSystem` and its builder.
-//! - `io`: The asynchronous I/O subsystem, including `Poller` and `GlobalReactor`.
+//! # Main Modules
+//!
+//! - `vibe`: Contains the simple, public-facing API (`VibeSystem`, `Job`, `collect`).
+//! - `vibe_code`: The internal engine that manages worker nodes and task scheduling.
+//! - `node`: Defines the `VibeNode`, an individual worker unit.
+//! - `task`: Defines the `Task` that the system uses to wrap your functions.
 
-#![allow(dead_code)] // Temporarily allow dead code during development
-#![allow(unused_imports)] // Temporarily allow unused imports during development
+#![allow(dead_code)]
+#![allow(unused_imports)]
 
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
 
-// --- Core Modules ---
+// Internal modules that power the system.
 pub mod node;
 pub mod queue;
 pub mod signals;
 pub mod task;
 pub mod types;
 pub mod utils;
-pub mod vibe_code; // I/O Subsystem Module
-// --- Public API Re-exports ---
-// This section defines the clean public API for external crates (e.g., a P2P library) to use.
-
-/// Re-exports the main system entry point for creating and managing the Vibe System.
-pub use vibe_code::{UltraOmegaBuilder, UltraOmegaSystem};
-
-/// Re-exports core types for interacting with tasks:
-/// - `TaskHandle`: For awaiting task results.
-/// - `TaskError`: Errors that can occur during task execution.
-/// - `Priority`: Task priority levels.
-pub use task::{Priority, TaskError, TaskHandle};
-
-/// Re-exports `NodeError`, representing errors specific to `VibeNode` operations.
-pub use types::NodeError;
 pub mod vibe;
+pub mod vibe_code;
+
+// Re-exports for the public API.
+pub use task::{Priority, TaskError, TaskHandle};
+pub use types::NodeError;
 pub use vibe::{Job, VibeSystem, collect};
+pub use vibe_code::{UltraVibeBuilder, UltraVibeSystem};

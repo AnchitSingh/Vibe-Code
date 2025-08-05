@@ -1,32 +1,27 @@
-/// Global monotonic time source, initialized once at application startup.
-///
-/// This is used internally to track elapsed time since timer initialization.
-/// Access is thread-safe after initialization.
-static TIMER_START: OnceLock<Instant> = OnceLock::new();
+//! Provides utility functions for timing and random number generation.
+
 use std::sync::OnceLock;
 use std::time::Instant;
 
-/// Initializes the global timer.
-///
-/// This function must be called exactly once before any timer-related
-/// functions are used. Subsequent calls will return an error.
+/// A global, thread-safe timestamp of when the application started.
+/// This is used as a monotonic time source for performance metrics.
+static TIMER_START: OnceLock<Instant> = OnceLock::new();
+
+/// Initializes the global timer. Must be called once at startup.
 ///
 /// # Returns
-/// - `Ok(())` if initialization was successful
-/// - `Err(&'static str)` if the timer was already initialized
-///
-/// # Panics
-/// Panics if called from multiple threads simultaneously.
+/// - `Ok(())` if the timer was successfully initialized.
+/// - `Err(&'static str)` if the timer was already initialized.
 pub fn timer_init() -> Result<(), &'static str> {
     TIMER_START
         .set(Instant::now())
         .map_err(|_| "Timer already initialized")
 }
 
-/// Returns the number of nanoseconds elapsed since timer initialization.
+/// Returns the number of nanoseconds elapsed since `timer_init()` was called.
 ///
 /// # Panics
-/// Panics if called before `timer_init()`.
+/// Panics if the timer has not been initialized.
 #[inline(always)]
 pub fn elapsed_ns() -> u64 {
     let start = TIMER_START
@@ -35,10 +30,12 @@ pub fn elapsed_ns() -> u64 {
     Instant::now().duration_since(*start).as_nanos() as u64
 }
 
-const OMEGA_MULT_A: u64 = 0x9e3779b97f4a7c15;
-const OMEGA_MULT_B: u64 = 0xc6a4a7935bd1e995;
-const OMEGA_MULT_C: u64 = 0xe7037ed1a0b428db;
+// Constants used for the random number generation algorithm.
+const VIBE_MULT_A: u64 = 0x9e3779b97f4a7c15;
+const VIBE_MULT_B: u64 = 0xc6a4a7935bd1e995;
+const VIBE_MULT_C: u64 = 0xe7037ed1a0b428db;
 
+/// A fast, non-cryptographic random number generator.
 #[derive(Clone, Copy, Debug)]
 pub struct VibeRng {
     state_a: u64,
@@ -46,6 +43,8 @@ pub struct VibeRng {
     counter: u64,
 }
 
+/// Strategies for biasing the random number generator.
+/// Used by the task router to select nodes.
 #[derive(Clone, Copy, Debug)]
 pub enum BiasStrategy {
     None,
@@ -56,23 +55,24 @@ pub enum BiasStrategy {
 }
 
 impl VibeRng {
+    /// Creates a new `VibeRng` instance from a given seed.
     #[inline(always)]
     pub fn new(seed: u64) -> Self {
-        let mut z = seed.wrapping_add(OMEGA_MULT_A);
+        let mut z = seed.wrapping_add(VIBE_MULT_A);
 
-        z = (z ^ (z >> 30)).wrapping_mul(OMEGA_MULT_B);
-        z = (z ^ (z >> 27)).wrapping_mul(OMEGA_MULT_C);
+        z = (z ^ (z >> 30)).wrapping_mul(VIBE_MULT_B);
+        z = (z ^ (z >> 27)).wrapping_mul(VIBE_MULT_C);
         z = z ^ (z >> 31);
         let state_a = z;
 
-        z = state_a.wrapping_add(OMEGA_MULT_A);
-        z = (z ^ (z >> 29)).wrapping_mul(OMEGA_MULT_C);
-        z = (z ^ (z >> 26)).wrapping_mul(OMEGA_MULT_B);
+        z = state_a.wrapping_add(VIBE_MULT_A);
+        z = (z ^ (z >> 29)).wrapping_mul(VIBE_MULT_C);
+        z = (z ^ (z >> 26)).wrapping_mul(VIBE_MULT_B);
         z = z ^ (z >> 30);
         let state_b = z;
 
-        z = state_b.wrapping_add(OMEGA_MULT_A);
-        z = (z ^ (z >> 28)).wrapping_mul(OMEGA_MULT_B);
+        z = state_b.wrapping_add(VIBE_MULT_A);
+        z = (z ^ (z >> 28)).wrapping_mul(VIBE_MULT_B);
         let counter = z ^ (z >> 32);
 
         Self {
@@ -82,6 +82,7 @@ impl VibeRng {
         }
     }
 
+    /// Generates a random number within a given range (inclusive).
     #[inline(always)]
     pub fn range(&mut self, min: u64, max: u64) -> u64 {
         if min >= max {
@@ -91,13 +92,14 @@ impl VibeRng {
         let range = max - min + 1;
         let result = match range {
             1 => 0,
-            2..=256 if range.is_power_of_two() => omega_range_pow2(self, range),
-            2..=256 => omega_range_small(self, range),
-            _ => omega_range_unbiased(self, range),
+            2..=256 if range.is_power_of_two() => vibe_range_pow2(self, range),
+            2..=256 => vibe_range_small(self, range),
+            _ => vibe_range_unbiased(self, range),
         };
         min + result
     }
 
+    /// Generates a biased random number within a given range.
     #[inline(always)]
     pub fn range_biased(&mut self, min: u64, max: u64, bias: BiasStrategy) -> u64 {
         if min >= max {
@@ -110,6 +112,7 @@ impl VibeRng {
         }
     }
 
+    /// Generates the next raw `u64` random number.
     #[inline(always)]
     pub fn next_raw(&mut self) -> u64 {
         let s0 = self.state_a;
@@ -121,25 +124,28 @@ impl VibeRng {
 
         let result = s0.wrapping_add(s1);
         let result = result ^ (result >> 31);
-        let result = result.wrapping_mul(OMEGA_MULT_B);
+        let result = result.wrapping_mul(VIBE_MULT_B);
         let result = result ^ (result >> 29);
 
         self.counter = self.counter.wrapping_add(1);
         result
     }
 
+    /// Generates the next `f64` random number between 0.0 and 1.0 (fast but less precision).
     #[inline(always)]
     fn next_f64_fast(&mut self) -> f64 {
         const SCALE: f64 = 1.0 / (1u32 << 24) as f64;
         ((self.next_raw() >> 40) as u32 as f64) * SCALE
     }
 
+    /// Generates the next `f64` random number between 0.0 and 1.0 (full precision).
     #[inline(always)]
     pub fn next_f64(&mut self) -> f64 {
         const SCALE: f64 = 1.0 / (1u64 << 53) as f64;
         ((self.next_raw() >> 11) as f64) * SCALE
     }
 
+    /// Internal implementation for biased range generation.
     #[inline(always)]
     fn range_biased_impl(&mut self, min: u64, max: u64, bias: BiasStrategy) -> u64 {
         let full_range = max - min + 1;
@@ -191,8 +197,9 @@ impl VibeRng {
     }
 }
 
+/// Unbiased range generation for large ranges.
 #[inline(always)]
-fn omega_range_unbiased(rng: &mut VibeRng, range: u64) -> u64 {
+fn vibe_range_unbiased(rng: &mut VibeRng, range: u64) -> u64 {
     if range <= 1 {
         return 0;
     }
@@ -212,16 +219,18 @@ fn omega_range_unbiased(rng: &mut VibeRng, range: u64) -> u64 {
     (multiresult >> 64) as u64
 }
 
+/// Fast range generation for powers of two.
 #[inline(always)]
-fn omega_range_pow2(rng: &mut VibeRng, range: u64) -> u64 {
+fn vibe_range_pow2(rng: &mut VibeRng, range: u64) -> u64 {
     debug_assert!(range.is_power_of_two());
     rng.next_raw() & (range - 1)
 }
 
+/// Fast range generation for small ranges.
 #[inline(always)]
-fn omega_range_small(rng: &mut VibeRng, range: u64) -> u64 {
+fn vibe_range_small(rng: &mut VibeRng, range: u64) -> u64 {
     if range.is_power_of_two() {
-        return omega_range_pow2(rng, range);
+        return vibe_range_pow2(rng, range);
     }
 
     let mask = range.next_power_of_two() - 1;

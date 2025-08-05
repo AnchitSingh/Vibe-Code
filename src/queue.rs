@@ -1,8 +1,8 @@
-//! Implements `VibeQueue`, a bounded, thread-safe queue for managing tasks within an `VibeNode`.
+//! Implements `VibeQueue`, a thread-safe, bounded queue for tasks.
 //!
-//! This module provides the core queueing mechanism, including error handling for
-//! queue-specific operations and logic for signaling node overload/idle states
-//! based on configurable watermarks.
+//! This module provides the core queuing mechanism for a `VibeNode`. It manages
+//! task backpressure and signals the node when it becomes overloaded or idle,
+//! based on configurable high and low watermarks.
 
 use crate::signals::{NodeId, QueueId, SystemSignal};
 use crate::task::Task;
@@ -14,22 +14,20 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-// --- QueueError ---
-/// Represents errors that can occur during `VibeQueue` operations.
+/// Represents errors that can occur during queue operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueueError {
-    /// The queue has reached its maximum capacity and cannot accept more items.
+    /// The queue has reached its maximum capacity.
     Full,
-    /// The queue is empty, and no items can be dequeued.
+    /// The queue is empty.
     Empty,
-    /// The queue has been explicitly closed and no longer accepts or yields items.
+    /// The queue has been closed and can no longer be used.
     Closed,
-    /// Failed to send a `SystemSignal` related to queue state (e.g., overload/idle).
+    /// Failed to send a system signal regarding queue state.
     SendError,
 }
 
 impl fmt::Display for QueueError {
-    /// Implements the `Display` trait for `QueueError`, providing human-readable error messages.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             QueueError::Full => write!(f, "Queue is full"),
@@ -42,36 +40,33 @@ impl fmt::Display for QueueError {
 
 impl std::error::Error for QueueError {}
 
-// --- VibeQueue ---
-/// A bounded, thread-safe queue for holding items of type `T`.
+/// A bounded, thread-safe queue for holding tasks.
 ///
-/// `VibeQueue` is designed to manage task backpressure within an `VibeNode`.
-/// It supports configurable high and low watermarks to signal `NodeOverloaded`
-/// and `NodeIdle` events, respectively, to a central system component.
+/// `VibeQueue` is used within each `VibeNode` to buffer incoming tasks. It sends
+/// `NodeOverloaded` and `NodeIdle` signals to the system when its size crosses
+/// defined percentage thresholds (watermarks).
 pub struct VibeQueue<T> {
-    /// The unique identifier for this queue.
+    /// A unique identifier for this queue.
     id: QueueId,
-    /// The ID of the `VibeNode` this queue belongs to.
+    /// The ID of the node that owns this queue.
     node_id: NodeId,
-    /// The underlying `VecDeque` protected by a `Mutex` for thread-safe access.
+    /// The internal queue storage, protected by a `Mutex`.
     tasks: Arc<Mutex<VecDeque<T>>>,
-    /// The maximum number of items this queue can hold.
+    /// The maximum number of items the queue can hold.
     capacity: usize,
-    /// The percentage of capacity at or below which the queue is considered "idle"
-    /// after being overloaded.
+    /// The percentage of capacity at or below which the queue is considered "idle".
     low_watermark_percentage: f32,
     /// The percentage of capacity at or above which the queue is considered "overloaded".
     high_watermark_percentage: f32,
-    /// Sender channel for sending `SystemSignal`s to a central system component.
+    /// A channel to send signals to the central system.
     signal_tx: mpsc::Sender<SystemSignal>,
-    /// An atomic flag indicating if the queue was previously in an overloaded state.
+    /// A flag to track if the queue is currently in an overloaded state.
     was_overloaded: Arc<AtomicBool>,
-    /// An atomic flag indicating if the queue has been closed.
+    /// A flag to indicate if the queue has been permanently closed.
     is_closed: Arc<AtomicBool>,
 }
 
 impl<T> fmt::Debug for VibeQueue<T> {
-    /// Implements the `Debug` trait for `VibeQueue`, providing a concise representation.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("VibeQueue")
             .field("id", &self.id)
@@ -83,7 +78,6 @@ impl<T> fmt::Debug for VibeQueue<T> {
     }
 }
 
-/// Generic methods for any `VibeQueue<T>` regardless of the inner type `T`.
 impl<T> VibeQueue<T> {
     /// Returns the current number of items in the queue.
     pub fn len(&self) -> usize {
@@ -108,14 +102,14 @@ impl<T> VibeQueue<T> {
         self.len() >= self.capacity
     }
 
-    /// Returns the unique `QueueId` of this queue.
+    /// Returns the unique ID of this queue.
     pub fn id(&self) -> QueueId {
         self.id
     }
 
-    /// Closes the queue, preventing further enqueue operations.
+    /// Closes the queue, preventing any new items from being added.
     ///
-    /// Existing items can still be dequeued until the queue is empty.
+    /// Items already in the queue can still be removed.
     pub fn close(&self) {
         self.is_closed.store(true, Ordering::SeqCst);
     }
@@ -126,24 +120,10 @@ impl<T> VibeQueue<T> {
     }
 }
 
-/// Specific methods for `VibeQueue` instances holding `Task` structs.
-///
-/// This block includes constructors and methods for enqueueing and dequeuing
-/// `Task`s, with integrated logic for sending `SystemSignal`s based on
-/// queue watermarks.
 impl VibeQueue<Task> {
-    /// Creates a new `VibeQueue` for `Task`s with specified watermarks and a signal sender.
-    ///
-    /// # Arguments
-    ///
-    /// * `node_id` - The `NodeId` of the owning `VibeNode`.
-    /// * `capacity` - The maximum number of tasks the queue can hold.
-    /// * `low_watermark_percentage` - The percentage (0.0 to 1.0) at which to signal `NodeIdle`.
-    /// * `high_watermark_percentage` - The percentage (0.0 to 1.0) at which to signal `NodeOverloaded`.
-    /// * `signal_tx` - A sender for `SystemSignal`s.
+    /// Creates a new `VibeQueue` with custom watermarks for signaling.
     ///
     /// # Panics
-    ///
     /// Panics if `capacity` is 0 or if watermark percentages are invalid.
     pub fn with_watermarks_and_signal(
         node_id: NodeId,
@@ -178,13 +158,7 @@ impl VibeQueue<Task> {
         }
     }
 
-    /// Creates a new `VibeQueue` for `Task`s with default watermark percentages (0.25 and 0.75).
-    ///
-    /// # Arguments
-    ///
-    /// * `node_id` - The `NodeId` of the owning `VibeNode`.
-    /// * `capacity` - The maximum number of tasks the queue can hold.
-    /// * `signal_tx` - A sender for `SystemSignal`s.
+    /// Creates a new `VibeQueue` with default watermarks (25% and 75%).
     pub fn new_with_signal(
         node_id: NodeId,
         capacity: usize,
@@ -193,18 +167,10 @@ impl VibeQueue<Task> {
         Self::with_watermarks_and_signal(node_id, capacity, 0.25, 0.75, signal_tx)
     }
 
-    /// Attempts to enqueue a `Task` into the queue.
+    /// Adds a task to the back of the queue.
     ///
-    /// If the queue is full, it may send a `NodeOverloaded` signal.
-    ///
-    /// # Arguments
-    ///
-    /// * `task` - The `Task` to enqueue.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` indicating success (`Ok(())`) or a `QueueError` if the queue
-    /// is full, closed, or a signal could not be sent.
+    /// If adding the task causes the queue to become full, it sends a
+    /// `NodeOverloaded` signal.
     pub fn enqueue(&self, task: Task) -> Result<(), QueueError> {
         if self.is_closed.load(Ordering::Relaxed) {
             return Err(QueueError::Closed);
@@ -213,14 +179,12 @@ impl VibeQueue<Task> {
         let mut tasks_guard = self.tasks.lock().expect("Queue mutex poisoned for enqueue");
 
         if tasks_guard.len() >= self.capacity {
-            // If the queue is full and was not previously marked as overloaded, send a signal.
             if !self.was_overloaded.swap(true, Ordering::SeqCst) {
                 let signal = SystemSignal::NodeOverloaded {
                     node_id: self.node_id,
                     queue_id: Some(self.id),
                 };
                 if self.signal_tx.send(signal).is_err() {
-                    // If signal sending fails, revert the overloaded flag.
                     self.was_overloaded.store(false, Ordering::SeqCst);
                     return Err(QueueError::SendError);
                 }
@@ -232,15 +196,10 @@ impl VibeQueue<Task> {
         Ok(())
     }
 
-    /// Attempts to dequeue a `Task` from the queue.
+    /// Removes a task from the front of the queue.
     ///
-    /// If the queue's length drops below the low watermark after dequeuing,
-    /// and it was previously overloaded, it may send a `NodeIdle` signal.
-    ///
-    /// # Returns
-    ///
-    /// An `Option<Task>` containing the dequeued task if available, or `None`
-    /// if the queue is empty or closed and empty.
+    /// If removing the task causes a previously overloaded queue to drop below
+    /// its low watermark, it sends a `NodeIdle` signal.
     pub fn dequeue(&self) -> Option<Task> {
         let mut tasks_guard = self.tasks.lock().expect("Queue mutex poisoned for dequeue");
         let task_option = tasks_guard.pop_front();
@@ -249,7 +208,7 @@ impl VibeQueue<Task> {
             let current_len = tasks_guard.len();
             let low_watermark_count =
                 (self.capacity as f32 * self.low_watermark_percentage) as usize;
-            // If the queue was overloaded and now drops below the low watermark, signal idle.
+
             if self.was_overloaded.load(Ordering::Relaxed)
                 && current_len <= low_watermark_count
                 && self
@@ -262,12 +221,10 @@ impl VibeQueue<Task> {
                     queue_id: Some(self.id),
                 };
                 if self.signal_tx.send(signal).is_err() {
-                    // If signal sending fails, revert the overloaded flag.
                     self.was_overloaded.store(true, Ordering::SeqCst);
                 }
             }
         } else if self.is_closed.load(Ordering::Relaxed) && tasks_guard.is_empty() {
-            // If the queue is closed and now empty, ensure NodeIdle signal is sent if it was overloaded.
             if self
                 .was_overloaded
                 .compare_exchange(true, false, Ordering::SeqCst, Ordering::Relaxed)
@@ -277,7 +234,7 @@ impl VibeQueue<Task> {
                     node_id: self.node_id,
                     queue_id: Some(self.id),
                 };
-                let _ = self.signal_tx.send(signal); // Ignore send error during shutdown
+                let _ = self.signal_tx.send(signal);
             }
             return None;
         }
@@ -286,11 +243,11 @@ impl VibeQueue<Task> {
     }
 }
 
-/// Implements the `Clone` trait for `VibeQueue`, allowing it to be cheaply cloned.
-///
-/// Cloning an `VibeQueue` creates a new handle to the *same* underlying queue
-/// data structure, as `tasks`, `was_overloaded`, and `is_closed` are `Arc`s.
 impl<T> Clone for VibeQueue<T> {
+    /// Clones the queue.
+    ///
+    /// This is a cheap operation, as it only clones the `Arc` pointers to the
+    /// underlying queue data, not the data itself.
     fn clone(&self) -> Self {
         VibeQueue {
             id: self.id,
