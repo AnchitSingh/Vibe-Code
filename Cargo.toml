@@ -1,8 +1,12 @@
 [package]
-name = "vibe_code"
+name = "vibe-code"
 version = "0.1.0"
 edition = "2024"
-
+authors = ["Anchit Singh <anchit0711@gmail.com>"]
+description = "Parallel CPU execution without threads or channels"
+license = "MIT"
+repository = "https://github.com/AnchitSingh/Vibe-Code"
+readme = "README.md"
 
 [profile.release]
 strip = true
