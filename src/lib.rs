@@ -1,6 +1,6 @@
 //! # VibeSystem: Simple Parallelism for Rust
 //!
-//! The `cpu_circulatory_system` library, also known as the VibeSystem, provides an incredibly
+//! The `vibe-code` library, also known as the VibeSystem, provides an incredibly
 //! simple way to run your code in parallel. It's designed for developers who want to speed
 //! up their applications without getting bogged down in the complexities of manual thread
 //! management, channels, or async runtimes.
@@ -14,13 +14,6 @@
 //! - **`Job`**: A handle to a piece of work that is running in the background. You can call
 //!   `.get()` on a `Job` to wait for its result.
 //! - **`collect`**: A helper function to wait for a `Vec<Job<T>>` to finish and get a `Vec<T>` of results.
-//!
-//! # Main Modules
-//!
-//! - `vibe`: Contains the simple, public-facing API (`VibeSystem`, `Job`, `collect`).
-//! - `vibe_code`: The internal engine that manages worker nodes and task scheduling.
-//! - `node`: Defines the `VibeNode`, an individual worker unit.
-//! - `task`: Defines the `Task` that the system uses to wrap your functions.
 
 #![allow(dead_code)]
 #![allow(unused_imports)]
